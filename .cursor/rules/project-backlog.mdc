@@ -1,0 +1,23 @@
+---
+description: project.md — objectives, next, backlog maintenance
+globs: docs/project.md
+alwaysApply: false
+---
+
+# Project.md Maintenance Rules
+
+- **Structure:** File must contain `# Objectives`, `# Next`, `# Backlog` sections. No `# Done`, `# Known gaps`, build status, or log paths should be in `project.md`.
+- **Combine First:** New work items must first be integrated into an existing backlog row's *Scenarios* column. Add a new backlog row only if a new scenario cannot be combined.
+- **Backlog Row Cap:** Maintain a lean backlog; prefer to keep total backlog rows at 4 or fewer. Prioritize or combine items rather than expanding the list.
+- **Next vs. Backlog:** The `Next` section should describe only the current, active implementation slice. Once completed or deferred, move items to the `Backlog`.
+- **User Notes:** Explicitly marked user notes (e.g., "**Important Do Not Remove**") in backlog items must *never* be deleted without explicit user instruction. They can only be weakened
+- **Objectives Stability:** The `Objectives` section defines the project's stable north star and should only be changed if the MVP scope itself shifts.
+
+- **Objectives List Item Cap:**  Objective list should have less than 5 items, lesser is better.
+
+- **Backlog Priority:** Must be unique integers 0,1,2,3,4 - rows can should be sorted
+
+-**Scenarios Column Character Cap** Strictly 76 characters
+
+
+

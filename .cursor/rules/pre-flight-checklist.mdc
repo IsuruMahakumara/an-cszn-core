@@ -1,0 +1,115 @@
+---
+description: Engine preflight — commission · LOT_SIZE · logging · math before demo/live fire
+alwaysApply: true
+---
+
+# Engine Preflight Checklist
+
+Run before demo/live burst work, after hot-path changes (`Graph.hpp`, `AlphaLoop.hpp`, `Binance.hpp`, `main.cpp`), or when user asks for preflight.
+
+**Sources:** `include/Graph.hpp` · `include/AlphaLoop.hpp` · `include/Binance.hpp` · `src/main.cpp` · `tests/trade_send_test.cpp` · `docs/BinanceFilters.md` · `docs/Strategy.md`
+
+---
+
+## Status table (fill on each run)
+
+| Area | Pass criteria | Known gaps today |
+|------|---------------|------------------|
+| Commission (eval) | `kFeeBps` in `eval_alpha()` · both CW/CCW products net of fee | Single round-trip ×f, not per-leg φ compounding (`Strategy.md`) |
+| Commission (sizing) | `size_burst` shrinks qty for fee drag between legs | **GAP** — walks at book, no fee haircut |
+| LOT_SIZE step | each `cfg::SYMBOLS[i].stepSize` matches filters for active pair · `size_burst` floors each hop | verify per deploy |
+| minNotional | every leg `qty × price ≥ pair minNotional` in quote after floor | **GAP** — engine seeds `maxNotionalQty` on leg 0 only |
+| Market WS log | `Log::line("market")` on each frame → `logs/market/*.jsonl` | OK |
+| Matrix log | `kind:config` + per-tick `kind:matrix` → `logs/matrix/*.jsonl` | OK |
+| Trade WS log | `Log::line("trade_ws")` on `Send` status 200 → `logs/trade_ws/*.jsonl` | Empty until alpha > 1 fires |
+| Cycle math | `eval_alpha` matches `Strategy.md` walk product | OK |
+| Integration test | `xmake build tests && ./build/.../tests` demo round-trip passes | Stricter than engine (fee + NOTIONAL bump) |
+
+---
+
+## Commission
+
+| Layer | Where | Rule |
+|-------|-------|------|
+| Gate | `SharedAdjacencyMatrix::eval_alpha()` | `f = 1 - kFeeBps×1e-4` (15 bps round-trip) on full 3-leg product |
+| CW | buy-anchor | `(1/a₀)×b₁×b₂×f` |
+| CCW | sell-anchor | `(1/a₂)×(1/a₁)×b₀×f` |
+| Wire | `size_burst` / `TradeWs::Send` | No fee on qty — must flag if claiming inventory-neutral |
+| Test | `tests/trade_send_test.cpp` | Sell qty = `floor(executed×0.999, step)` — 10 bps haircut |
+
+Align fee model across eval, sizing, and test before live.
+
+---
+
+## LOT_SIZE + NOTIONAL
+
+**Active triangle** — read at preflight time, do not hardcode pairs:
+
+| Source | Use |
+|--------|-----|
+| `cfg::SYMBOLS[i]` | `name` · `stepSize` for each matrix index `i` |
+| `Config.Ticker[i]` | wire symbol sent to `TradeWs` |
+| `docs/BinanceFilters.md` or `exchangeInfo` | cross-check `stepSize` · `minQty` · `minNotional` per pair |
+
+| Filter | Rule |
+|--------|------|
+| `stepSize` | `qty = floor(q / stepSize) × stepSize` per leg |
+| `minQty` | floored qty ≥ pair `minQty` (often equals `stepSize`) |
+| `minNotional` | `qty × book_price ≥ minNotional` in **quote asset** of that pair |
+
+| Filter | Engine | Test |
+|--------|--------|------|
+| step floor | `size_burst` per `cfg::SYMBOLS[i].stepSize` | offline floor cases + live round-trip per active pair |
+| minNotional | leg 0 seed at `maxNotionalQty` only | bumps until buy **and** post-fee sell clear min per pair |
+| qty wire | `TradeWs` `%.8f` all symbols | step-aware floor before send |
+
+**Preflight per leg** — for each hop `i` in the fired burst, using live `bid(i)` / `ask(i)`:
+
+```text
+notional_i = qty_i × price_i   # price = ask on BUY, bid on SELL
+fail if notional_i < minNotional_i (typically 5 in quote)
+```
+
+After `size_burst`, downstream legs often sit **below** minNotional when `maxNotionalQty` is small → `-1013 NOTIONAL` risk on fire.
+
+---
+
+## Logging
+
+| Channel | File | Trigger | Required fields |
+|---------|------|---------|-----------------|
+| `market` | `logs/market/*.jsonl` | every WS frame | `ts`, `frame` |
+| `matrix` | `logs/matrix/*.jsonl` | startup + each tick | `kind`, `buy_anchor_alpha`, `sell_anchor_alpha`, `bps_*`, quotes per sym index |
+| `trade_ws` | `logs/trade_ws/*.jsonl` | each successful `Send` | `ts`, `id`, `symbol`, `side`, `qty`, `ok`, `resp` |
+
+Verify paths printed in engine banner. Empty `trade_ws` with alpha < 1 is expected, not a logging bug.
+
+---
+
+## Math verification
+
+1. Recompute `buy_anchor_alpha` / `sell_anchor_alpha` from logged quotes — must match matrix log within float noise.
+2. Confirm both alphas < 1 → gate blocks fire (no false positive).
+3. If alpha > 1: walk `size_burst(true/false, maxNotionalQty)` — map legs to `AlphaLoop` `Send` order (CW: buyAnchor→sellTarget→sellBridge).
+4. Run `tests/trade_send_test` on demo (`SKIP_DEMO_TRADE` unset, `cfg.Live=false`).
+
+---
+
+## Blockers (do not claim ready for burst fire at `maxNotionalQty`)
+
+1. minNotional on legs 1–2 not enforced in `size_burst`
+2. Fee-aware qty walk missing on fire path
+3. Fee model mismatch: 15 bps eval vs 10 bps test sell haircut
+4. No `trade_ws` log lines yet — need alpha > 1 run or integration test to prove `Send`
+
+---
+
+## Commands
+
+```bash
+xmake build engine && xmake build tests
+./build/macosx/arm64/release/tests          # demo LOT_SIZE + TradeWs round-trip
+./build/macosx/arm64/release/engine         # WS + matrix logs; trade_ws on fire only
+```
+
+Report: status table filled · math sample · test result · log path evidence.

@@ -1,0 +1,40 @@
+---
+description: C++ style — symbol budget, minimal surface, why-comments
+globs: "**/*.{hpp,cpp}"
+alwaysApply: false
+---
+
+# Symbol budget
+
+Default: **net symbol count stays flat or shrinks** on every change slice. Growing the surface needs **explicit user permission** (e.g. “add `FloorQty`”, “ok to add symbols”).
+
+**Counts as a symbol** — any named entity you introduce or export: types, functions, methods, `constexpr`, globals, namespace-scope names. Not counted: locals, lambdas, anonymous-namespace internals, private members unless they become new public API.
+
+**Free without permission** — rename (1:1 = net zero), repurpose (same type, new fields/meaning), modify body/signature, remove dead code. Repurposing a struct: replace fields; don’t add fields on top of stale ones.
+
+**Net math** — per task: removes + renames offset adds. Remove three, add one → OK. Unsure → inline or extend existing names; ask before net growth.
+
+# C++ headers
+
+- **Few exported names** — entry + shared state/data only.
+- **No one-liner wrappers** — inline; don’t add a name without real logic.
+- **Struct when shared** — pass snapshot `const&` between sites; no return bags.
+- **One read pass** — load shared state once, pass downstream.
+- **Concrete over generic** — unroll fixed sequences; abstract when N or direction varies.
+- **Split files** only when a second real caller exists — not for planned work.
+
+Before adding a name: used in >1 place or stable API? non-trivial? can’t stay readable inlined? Any **no** → don’t add it. Symbol budget still applies — passing the checklist is not permission to grow net count.
+
+# Comments
+
+- Short; on new/changed code.
+- **Why** or non-obvious invariant — not what the line does.
+- Prefer one line.
+
+```cpp
+// BAD: increment counter
+++n;
+
+// GOOD: single-writer gate — one eval per burst
+if (gate.exchange(1) != 0) return;
+```

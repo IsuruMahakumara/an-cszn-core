@@ -1,0 +1,114 @@
+---
+description: blueprint.md — engine Symbols · Threads · gated Flow
+globs: docs/blueprint.md
+alwaysApply: false
+---
+
+# Blueprint.md Maintenance Rules
+
+Engine **`engine` binary only**. Document **today's code**, not backlog or planned architecture (`project.md`).
+
+## Structure (strict)
+
+Exactly **3** sections, this order — no others:
+
+1. `# Engine Blueprint` (title only)
+2. `## Symbols`
+3. `## Threads`
+4. `## Flow`
+
+**Forbidden sections:** Binaries, Hot path, Layers, File map, Triangle, I/O, Notation, Refs, Gaps, Pending, ingest.
+
+**No `## Refs`.** Cross-doc pointers live in README / Strategy / GraphTickerModel — not here.
+
+Low-energy: tables + one mermaid. No prose paragraphs. One line under a table is OK.
+
+---
+
+## § Symbols
+
+Three parts in one section, in order:
+
+1. **Namespace table** — columns `Namespace` · `Symbols`. One row per namespace (`cfg::`, `alpha::`, `Log::`, `StrUtils::`, *(global)*, *(types)*). Hot-path symbols only; use `·` separators.
+2. **Gates line** — one line: `Running` · `busy` · `product>1` · `Send` ok (note today's check if non-structural).
+3. **File table** — columns `File` · `Symbols`. Every engine hot-path header/cpp; fully qualify namespaced symbols.
+4. **Payload chain** — one `text` fence: hop types from WS frame to order ack.
+
+When a hot-path file or symbol changes, update **both** namespace and file tables. Remove stale rows.
+
+**Omit:** cold/unused symbols (`ParseBookTicker`, `PriceEdge`, `feeBps`, `ArbCooldownMs`), ingest files, compile-time-only headers off hot path.
+
+---
+
+## § Threads
+
+One table · **3 rows** · columns: `Thread` · `Runs` · `Blocks on` · `R/W`
+
+Required rows: market ix · trade ix · main.
+
+One line below (required): no dedicated alpha thread today if eval+fire still on market ix.
+
+No thread mermaid. Planned thread split → `project.md` only.
+
+---
+
+## § Flow
+
+**Exactly one** mermaid diagram.
+
+**Node order:** `MarketWs` → `BookTickerParser` → `cfg::AdjacencyMatrix` → main λ → gates → `alpha::OnBookTick` → `TradeWs::Send` → release `busy`
+
+**Gates (order):** `Running?` → `busy?` → `product>1?` (diamond nodes or edge labels)
+
+**Required edge labels:** `M->str` · `BookTick` · `block o0→o1→o2` on fire edge
+
+One line under diagram: market ix blocked during burst; how trade ix unblocks `Send`.
+
+No second mermaid. No stage table.
+
+---
+
+## Scope boundaries (do not put in blueprint.md)
+
+| Concern | Owner doc |
+|---------|-----------|
+| Product math, sizing, cycle legs | `Strategy.md` |
+| Matrix cell meaning, asset indices | `GraphTickerModel.md` |
+| WS JSON, order.place, errors | `BinanceWsSamples.md` |
+| LOT_SIZE, NOTIONAL | `BinanceFilters.md` |
+| Backlog, Next, planned alpha thread | `project.md` |
+| Build, run commands | `README.md` |
+| Ingest binary | out of scope |
+
+---
+
+## Update triggers
+
+Revise when: hot-path file/symbol change · thread ownership change · gate add/reorder · `MarketWs`/`TradeWs` contract change.
+
+If code and blueprint disagree, **blueprint is wrong** — unless aspirational state lives in `project.md` only.
+
+---
+
+## Comprehension checklist
+
+Reader must answer without C++:
+
+1. Which thread runs `alpha::OnBookTick`?
+2. What three gates before fire?
+3. What blocks market ix during a burst?
+4. Which file owns `TradeWs` vs `cfg::AdjacencyMatrix`?
+5. Payload at each hop?
+
+Incomplete Symbols or Flow — do not add sections to compensate.
+
+---
+
+## Anti-patterns
+
+- Extra `##` for I/O, triangle, binaries, refs
+- Two flowcharts
+- Ingest / `Ingest.hpp`
+- Full symbol dumps for cold code
+- Prose *why* for gates (→ `Strategy.md`)
+- Future architecture in Threads/Flow

@@ -1,0 +1,25 @@
+---
+description: Markdown docs — low-energy, role per file
+globs: "**/*.md"
+alwaysApply: false
+---
+
+# Docs style
+
+- Low-energy reading: few words; tables and mermaid over prose.
+- No verbose sections; one idea per bullet or row.
+- Mermaid encouraged for flows and architecture.
+
+## File roles
+
+| File | Content |
+|------|---------|
+| `docs/blueprint.md` | Engine Symbols · Threads · gated Flow · maintenance → `blueprint.mdc` |
+| `docs/strategies.md` | Math only |
+| `docs/project.md` | Objectives + Next + Backlog only · maintenance → `project-backlog.mdc` |
+| `README.md` | User use this to refer build command - Do Not Edit without explicit user permission |
+| `docs/GraphTickerModel.md` | Data Structure North Star - Do Not Edit without explicit user permission |
+| `docs/BinanceWsSamples.md` | Live Binance WS request/response samples - Do Not Edit without explicit user permission |
+| `docs/BinanceFilters.md` | Binance spot exchangeInfo filters (LOT_SIZE, NOTIONAL, tick) - Do Not Edit without explicit user permission|
+
+Do not mix concerns across these files.
