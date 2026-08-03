@@ -4,3 +4,8 @@ build/
 logs/
 .env
 .cursor/debug*.log
+python-api-tests/__pycache__
+python-api-tests/bar_signal_demo.py
+.*
+
+
