@@ -83,9 +83,10 @@ def err_text(e) -> object:
 
 
 def load_steps() -> dict[str, tuple[float, float]]:
+    # TRADING linear pairs only — USDT- and USDC-quoted both allowed
     out: dict[str, tuple[float, float]] = {}
     for s in get("/fapi/v1/exchangeInfo")["symbols"]:
-        if s["status"] != "TRADING" or not s["symbol"].endswith("USDT"):
+        if s["status"] != "TRADING":
             continue
         qty_step = price_tick = None
         for f in s["filters"]:
@@ -125,6 +126,7 @@ def mark_price(symbol: str) -> float:
 
 
 def fetch_bars(symbol: str, *, kline_interval: str, feature_bar_count: int) -> Bars:
+    # pull one extra bar so we can drop a still-open candle
     raw = get(
         "/fapi/v1/klines",
         {
@@ -134,6 +136,7 @@ def fetch_bars(symbol: str, *, kline_interval: str, feature_bar_count: int) -> B
         },
     )
     now = int(time.time() * 1000)
+    # k[6] = closeTime; keep only closed bars
     rows = [k for k in raw if int(k[6]) <= now]
     rows = rows[-feature_bar_count:]
     if len(rows) < feature_bar_count:
@@ -147,6 +150,93 @@ def fetch_bars(symbol: str, *, kline_interval: str, feature_bar_count: int) -> B
     )
 
 
+# --- positions + trail insurance ---
+
+def open_positions() -> dict[str, float]:
+    """Signed snapshot: symbol → positionAmt (signed; +long / -short)."""
+    # private account path — must sign
+    rows = get("/fapi/v2/positionRisk", signed=True)
+    out: dict[str, float] = {}
+    for r in rows:
+        # zero means flat on that contract
+        qty = float(r.get("positionAmt") or 0)
+        if abs(qty) < 1e-12:
+            continue
+        out[r["symbol"]] = qty
+    return out
+
+
+def open_algo_symbols() -> set[str]:
+    """
+    Symbols that already have a live conditional/algo order.
+    v1: any open algo on the symbol counts as protected.
+    """
+    # private — signed; works after Dec 2025 algo migration
+    rows = get("/fapi/v1/openAlgoOrders", signed=True)
+    if not isinstance(rows, list):
+        # some errors surface as dict; treat as empty so insurance may re-place
+        return set()
+    out: set[str] = set()
+    for r in rows:
+        sym = r.get("symbol")
+        if sym:
+            out.add(sym)
+    return out
+
+
+def has_position(symbol: str, positions: dict[str, float]) -> bool:
+    # true if we already hold size on this symbol
+    return abs(positions.get(symbol, 0.0)) > 1e-12
+
+
+def is_protected(symbol: str, algo_symbols: set[str]) -> bool:
+    # true if an open algo (e.g. trailing stop) exists for symbol
+    return symbol in algo_symbols
+
+
+def ensure_trail(
+    symbol: str,
+    qty: float,
+    *,
+    trail_callback_rate_pct: float,
+    steps: dict[str, tuple[float, float]] | None = None,
+) -> str:
+    """
+    Place TRAILING_STOP_MARKET for an existing position.
+    qty signed: +long → SELL trail; -short → BUY trail.
+    Returns stop side string.
+    """
+    if abs(qty) < 1e-12:
+        raise RuntimeError(f"{symbol}: no size for trail")
+    # exit side opposite to position
+    stop_side = "SELL" if qty > 0 else "BUY"
+    # use absolute size; floor to LOT_SIZE when steps available
+    raw_qty = abs(qty)
+    if steps and symbol in steps:
+        qty_step, _ = steps[symbol]
+        raw_qty = round_down(raw_qty, qty_step)
+        if raw_qty < qty_step:
+            raise RuntimeError(f"{symbol}: trail qty below step")
+        qty_s = as_str(raw_qty, qty_step)
+    else:
+        # fall back to exchange string (already from fill / positionRisk)
+        qty_s = f"{raw_qty:.8f}".rstrip("0").rstrip(".")
+    # exchange trails callbackRate % behind mark extremes
+    post(
+        "/fapi/v1/algoOrder",
+        {
+            "algoType": "CONDITIONAL",
+            "symbol": symbol,
+            "side": stop_side,
+            "type": "TRAILING_STOP_MARKET",
+            "callbackRate": f"{trail_callback_rate_pct:.1f}",
+            "quantity": qty_s,
+            "workingType": "MARK_PRICE",
+        },
+    )
+    return stop_side
+
+
 def open_with_trail(
     symbol: str,
     side_str: str,
@@ -155,7 +245,9 @@ def open_with_trail(
     leverage: int,
     trail_callback_rate_pct: float,
 ) -> tuple[str, str]:
+    # force leverage (account setting; not used for trail width math)
     post("/fapi/v1/leverage", {"symbol": symbol, "leverage": leverage})
+    # market entry
     order = post("/fapi/v1/order", {
         "symbol": symbol,
         "side": side_str,
@@ -163,19 +255,20 @@ def open_with_trail(
         "quantity": qty_str,
         "newOrderRespType": "RESULT",
     })
+    # filled size anchors the trail qty
     filled = order.get("executedQty") or qty_str
-    stop_side = "SELL" if side_str == "BUY" else "BUY"
+    # signed qty for ensure_trail: long positive, short negative
+    signed_qty = float(filled) if side_str == "BUY" else -float(filled)
     try:
-        post("/fapi/v1/algoOrder", {
-            "algoType": "CONDITIONAL",
-            "symbol": symbol,
-            "side": stop_side,
-            "type": "TRAILING_STOP_MARKET",
-            "callbackRate": f"{trail_callback_rate_pct:.1f}",
-            "quantity": filled,
-            "workingType": "MARK_PRICE",
-        })
+        # dual-place: trail immediately after entry
+        stop_side = ensure_trail(
+            symbol,
+            signed_qty,
+            trail_callback_rate_pct=trail_callback_rate_pct,
+        )
     except Exception:
+        # trail failed → flatten so we are not naked
+        stop_side = "SELL" if side_str == "BUY" else "BUY"
         post("/fapi/v1/order", {
             "symbol": symbol,
             "side": stop_side,
