@@ -110,17 +110,40 @@ class Client:
         a = self.account()
         return float(a.get("availableBalance") or 0.0)
 
-    def positions(self) -> dict[str, float]:
-        # IN: — → OUT: {symbol: signed qty}
+    def position_book(self) -> dict[str, dict[str, float]]:
+        # IN: — → OUT: {symbol: qty, entry, mark, upnl}
         risk = self._req("GET", "/fapi/v2/positionRisk", signed=True)
-        out: dict[str, float] = {}
+        out: dict[str, dict[str, float]] = {}
         for p in risk:
             amt = float(p.get("positionAmt", 0.0))
             if abs(amt) < 1e-12:
                 continue
             sym = p["symbol"]
-            out[sym] = out.get(sym, 0.0) + amt
+            # Venue fields used by stop / no-add-to-losers.
+            row = {
+                "qty": amt,
+                "entry": float(p.get("entryPrice") or 0.0),
+                "mark": float(p.get("markPrice") or 0.0),
+                "upnl": float(p.get("unRealizedProfit") or 0.0),
+            }
+            if sym not in out:
+                out[sym] = row
+                continue
+            # Hedge dual-side: net qty, sum pnl, size-weighted entry.
+            prev = out[sym]
+            tot = prev["qty"] + amt
+            notion = abs(prev["qty"]) * prev["entry"] + abs(amt) * row["entry"]
+            out[sym] = {
+                "qty": tot,
+                "entry": notion / max(abs(tot), 1e-12),
+                "mark": row["mark"],
+                "upnl": prev["upnl"] + row["upnl"],
+            }
         return out
+
+    def positions(self) -> dict[str, float]:
+        # IN: — → OUT: {symbol: signed qty}
+        return {s: v["qty"] for s, v in self.position_book().items()}
 
     def exchange_im_reported(self) -> float:
         total = 0.0

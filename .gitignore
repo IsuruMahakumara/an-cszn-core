@@ -7,6 +7,9 @@ logs/
 python-api-tests/__pycache__
 python-api-tests/bar_signal_demo.py
 .*
-__pycache__
+
+
+__pycache__/
+*.pyc
 
 

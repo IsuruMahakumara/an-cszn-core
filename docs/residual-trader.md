@@ -48,7 +48,7 @@ There is no `binance_futures.py`. The adapter lives in `exchange.py`.
 |---|---|---|---|
 | signal | `rolling_beta`, `residuals`, `residual_signal`, `cross_sectional_z`, `sparse_z`, `dollar_neutral_weights`, `beta_neutralize`, `apply_weight_deadband`, `target_weights` | Asset closes, Bitcoin closes, prior weights | Unit-gross weights, z-scores, betas |
 | risk | `collateral_from_margin`, `gross_notional_budget`, `derived_im`, `cap_name_weights` | Margin, positions, marks | Collateral cap, gross budget, estimated initial margin |
-| orders | `cost_floor`, `rebalance_orders` | Weights, prices, positions, gross | Order stub list |
+| orders | `cost_floor`, `rebalance_orders` | Weights, prices, positions, entry, unrealized, gross | Order stubs with `exit_reason`, closes first |
 
 Beta hedge runs only inside names that pass the z-score floor, so weak names stay at zero weight and portfolio Bitcoin exposure stays near zero on the active set.
 
@@ -60,7 +60,7 @@ Beta hedge runs only inside names that pass the z-score floor, so weak names sta
 | `mark` | Symbol | Mark price |
 | `filters` | Symbol | Lot step and minimum notional |
 | `margin_balance` / `available_balance` | None | Account balances |
-| `positions` | None | Signed quantity by symbol |
+| `positions` / `position_book` | None | Signed quantity, or qty plus entry / mark / unrealized |
 | `set_leverage` / `market` | Symbol, side, quantity | Order response |
 | `income_since` | Start time | Sums by income type |
 | `detect_hedge_mode` | None | Hedge-mode flag |
@@ -76,7 +76,7 @@ Beta hedge runs only inside names that pass the z-score floor, so weak names sta
 
 ## Run cycle stages
 
-`once` walks these labeled nodes in order: market, signal, halt, risk, orders, execute, persist. `main` boots the client then sleeps until the next `yyyy-mm-dd-hh-mm-ss` clock stamp.
+`once` walks these labeled nodes in order: market, signal, halt, risk, orders, execute, persist. `main` polls on a short clock (default ten minutes). Adds fire only when z-score floor, weight deadband, and cost floor clear. Exits do not wait on those gates: a name is flattened when the signal zeros it, or when unrealized loss on that name reaches `STOP_PCT` of its notional. Underwater names are never increased. Cover orders are queued before new risk so initial-margin checks cannot skip a flatten. Each stub logs `exit_reason` as `signal_off`, `stop`, or `rebalance`. There is no take-profit.
 
 ```mermaid
 flowchart TD
@@ -85,19 +85,22 @@ flowchart TD
   C --> D[Signal: sparse z-scores and dollar-neutral weights]
   D --> E{Drawdown halt?}
   E -->|yes| F[Flatten all positions then persist]
-  E -->|no| G[Risk: collateral and gross caps]
-  G --> H[Orders: cost gate then lot floor]
-  H --> I{Dry run?}
-  I -->|yes| J[Log targets only]
-  I -->|no| K[Execute market orders under initial-margin cap]
-  J --> L[Persist state and sleep until clock]
-  K --> L
-  F --> L
+  E -->|no|   G[Risk: collateral and gross caps]
+  G --> H{Exit or add edge?}
+  H -->|signal_off / stop| L
+  H -->|no add edge| I[Hold: log and persist]
+  H -->|add gates clear| J{Dry run?}
+  J -->|yes| K[Log targets only]
+  J -->|no| L[Execute closes first, then adds under IM cap]
+  I --> M[Poll sleep until next stamp]
+  K --> M
+  L --> M
+  F --> M
 ```
 
 ## Default knobs
 
-One-hour bars. Beta window forty-eight. Residual lookback twelve. Z-score clip three and minimum one. Collateral five percent of margin with a two-hundred United States dollar ceiling. Leverage five. Gross at most twenty-five percent of margin. Weight deadband three percent. Minimum rebalance forty United States dollars. Rebalance every four hours. Halt and flatten after three percent drawdown from peak margin. Dry run defaults on.
+One-hour bars kept for signal stability. Beta window forty-eight. Residual lookback twelve. Z-score clip three and minimum one. Collateral five percent of margin with a two-hundred United States dollar ceiling. Leverage five. Gross at most twenty-five percent of margin. Weight deadband three percent. Minimum rebalance forty United States dollars on adds only. Per-name stop one point two percent of that name's notional, no take-profit. Poll every ten minutes (`POLL_SECONDS`, alias `REBALANCE_SECONDS`). Halt and flatten after three percent drawdown from peak margin. Dry run defaults on.
 
 Traded universe is eighteen liquid perpetual names plus Bitcoin as benchmark only. Credentials load from the project-root `.env` file. Demo host defaults to `https://demo-fapi.binance.com` for both market data and orders.
 

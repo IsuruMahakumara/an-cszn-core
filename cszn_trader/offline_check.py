@@ -48,6 +48,12 @@ print("port_beta", float((w * beta).sum()))
 w2, _, _ = target_weights(closes, btc, prev_w=w)
 w2b = apply_weight_deadband(w2 * 0.99, w)
 print("deadband_keeps", (w2b - w).abs().max() < 1e-12 or True)
+# Zero target must not be restored by a tiny prior weight.
+z_hold = apply_weight_deadband(
+    pd.Series({"ETHUSDT": 0.0}), pd.Series({"ETHUSDT": 0.02})
+)
+assert float(z_hold["ETHUSDT"]) == 0.0
+print("deadband_signal_off", float(z_hold["ETHUSDT"]))
 
 # ── node: risk + orders ─────────────────────────────────────────────
 margin = 4166.0
@@ -60,3 +66,50 @@ print(
 )
 print("cost_floor_example", cost_floor(30, 5, gross))
 print("orders", rebalance_orders(w, closes.iloc[-1], {}, gross))
+
+# ── node: exit package smokes ───────────────────────────────────────
+px = pd.Series({"ETHUSDT": 100.0, "SOLUSDT": 50.0, "LINKUSDT": 20.0})
+flat_w = pd.Series(0.0, index=px.index)
+# Dust position must flatten even though |delta| is below MIN_REBALANCE_USDT.
+dust = rebalance_orders(flat_w, px, {"ETHUSDT": 0.2}, 200.0)
+assert dust and dust[0]["exit_reason"] == "signal_off", dust
+print("signal_off_dust", dust[0]["exit_reason"], dust[0]["delta_notional"])
+
+# Stop fires on a still-wanted long that is past STOP_PCT.
+want_eth = pd.Series({"ETHUSDT": 1.0, "SOLUSDT": 0.0, "LINKUSDT": 0.0})
+stopped = rebalance_orders(
+    want_eth,
+    px,
+    {"ETHUSDT": 2.0},
+    200.0,
+    entry_px={"ETHUSDT": 100.0},
+    upnl={"ETHUSDT": -3.0},
+)
+assert stopped and stopped[0]["exit_reason"] == "stop", stopped
+print("stop", stopped[0]["exit_reason"], stopped[0]["side"])
+
+# Underwater long: target wants more size → no add.
+no_add = rebalance_orders(
+    want_eth,
+    px,
+    {"ETHUSDT": 1.0},
+    200.0,
+    entry_px={"ETHUSDT": 100.0},
+    upnl={"ETHUSDT": -0.50},
+)
+assert no_add == [], no_add
+print("no_add_loser", no_add)
+
+# Closes first: stop flatten before a fresh add on another name.
+mixed_w = pd.Series({"ETHUSDT": 0.5, "SOLUSDT": 0.5, "LINKUSDT": 0.0})
+mixed = rebalance_orders(
+    mixed_w,
+    px,
+    {"ETHUSDT": 1.0},
+    400.0,
+    entry_px={"ETHUSDT": 100.0},
+    upnl={"ETHUSDT": -2.0},
+)
+reasons = [o["exit_reason"] for o in mixed]
+assert reasons[0] == "stop", mixed
+print("closes_first", reasons)

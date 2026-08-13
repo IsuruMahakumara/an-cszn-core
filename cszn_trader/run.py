@@ -1,14 +1,14 @@
 """
 COMPARTMENT: run
-ROLE:        wire the graph — clock loop only
+ROLE:        wire the graph — poll loop (watch often / fire rarely)
 GRAPH (nodes → edges):
   config ──knobs──► all
   exchange ──closes,marks,balances,pos──► run
   ops ──state,prev_w──► run
   strategy.signal ──w,z,beta──► run
   strategy.risk ──collat,gross,im──► run
-  strategy.orders ──order stubs──► run
-  run ──market orders──► exchange
+  strategy.orders ──order stubs or empty──► run
+  run ──market orders only if gates clear──► exchange
   run ──state,logs──► ops
 """
 
@@ -136,7 +136,11 @@ def once(client: Client, state: dict) -> dict:
     # ── node: risk ── IN margin,pos → OUT collat,gross,im ───────────
     collat = collateral_from_margin(margin)
     gross = gross_notional_budget(margin, collat)
-    pos = client.positions()
+    book = client.position_book()
+    # Split the book into the three maps the order node needs.
+    pos = {s: v["qty"] for s, v in book.items()}
+    entry_px = {s: v["entry"] for s, v in book.items()}
+    upnl = {s: v["upnl"] for s, v in book.items()}
     names = set(w.index) | set(pos)
     px = pd.Series({s: client.mark(s) for s in names})
     im = derived_im(pos, px)
@@ -150,17 +154,24 @@ def once(client: Client, state: dict) -> dict:
         return state
 
     # ── node: orders ── IN w,px,pos,gross → OUT order stubs ─────────
+    # Exits (stop / signal_off) bypass deadband+cost floor. Adds still gated.
     full_w = w.reindex(list(names)).fillna(0.0)
     mins = {s: client.filters(s)["minNotional"] for s in names}
-    orders = rebalance_orders(full_w, px, pos, gross, mins)
-    log(f"orders_n={len(orders)}", orders)
+    orders = rebalance_orders(full_w, px, pos, gross, mins, entry_px, upnl)
+    if not orders:
+        log("HOLD — no trade (z_min / deadband / cost floor / no-add-loser)")
+    else:
+        log(f"FIRE orders_n={len(orders)}", orders)
 
     # ── node: execute ── IN orders → OUT fills ──────────────────────
     sent = []
-    if config.DRY_RUN:
+    if not orders:
+        pass
+    elif config.DRY_RUN:
         log("DRY_RUN — no send")
     else:
         im_est = im
+        # Stubs are already closes-first; IM from covers frees room for later adds.
         for o in orders:
             filt = client.filters(o["symbol"])
             step = filt["stepSize"]
@@ -172,9 +183,11 @@ def once(client: Client, state: dict) -> dict:
                 continue
 
             cur_amt = float(pos.get(o["symbol"], 0.0))
+            # Signed qty after this fill; used to tag reduce-only vs new risk.
             new_amt = cur_amt + qty if o["side"] == "BUY" else cur_amt - qty
             reducing = abs(new_amt) < abs(cur_amt) - 1e-12
             add_im = notional / max(config.EXCHANGE_LEVERAGE, 1)
+            reason = o.get("exit_reason", "rebalance")
 
             if not reducing and im_est + add_im > collat + 1e-6:
                 log(f"BLOCK IM {o['symbol']}: {im_est:.2f}+{add_im:.2f} > {collat:.2f}")
@@ -196,9 +209,15 @@ def once(client: Client, state: dict) -> dict:
                     reduce_only=reducing and not client.hedge_mode,
                 )
                 oid = resp.get("orderId")
-                log("SENT", o["side"], o["symbol"], qty, oid)
+                log("SENT", o["side"], o["symbol"], qty, reason, oid)
                 sent.append(
-                    {"symbol": o["symbol"], "side": o["side"], "qty": qty, "orderId": oid}
+                    {
+                        "symbol": o["symbol"],
+                        "side": o["side"],
+                        "qty": qty,
+                        "orderId": oid,
+                        "exit_reason": reason,
+                    }
                 )
                 pos[o["symbol"]] = new_amt
                 im_est = im_est - add_im if reducing else im_est + add_im
@@ -255,21 +274,21 @@ def main() -> None:
     hedge = client.detect_hedge_mode()
     state = load_state()
     log(
-        "CSZN production residual",
+        "CSZN watch-often / fire-rarely",
         f"fapi={config.FAPI_BASE}",
         f"hedge={hedge}",
         f"dry_run={config.DRY_RUN}",
+        f"interval={config.INTERVAL}",
         f"z_min={config.Z_MIN}",
-        f"collat_frac={config.COLLATERAL_FRAC}",
-        f"gross_frac={config.GROSS_FRAC}",
-        f"lev={config.EXCHANGE_LEVERAGE}",
         f"deadband={config.WEIGHT_DEADBAND}",
         f"min_reb={config.MIN_REBALANCE_USDT}",
-        f"clock={config.REBALANCE_S}s",
+        f"stop={config.STOP_PCT}",
+        f"poll={config.POLL_S}s",
+        f"trade=gated",
         f"halted={state.get('halted')}",
     )
 
-    # ── node: clock ── loop once → sleep until wake stamp ───────────
+    # ── node: poll clock ── recheck edge often; sleep is not a trade schedule
     while True:
         try:
             state = once(client, state)
@@ -279,10 +298,10 @@ def main() -> None:
         if config.RUN_ONCE:
             return
         now = time.time()
-        wake = (math.floor(now / config.REBALANCE_S) + 1) * config.REBALANCE_S
+        wake = (math.floor(now / config.POLL_S) + 1) * config.POLL_S
         wait = wake - now
         wake_str = datetime.fromtimestamp(wake).strftime("%Y-%m-%d-%H-%M-%S")
-        log(f"sleep until {wake_str}")
+        log(f"poll sleep until {wake_str}")
         time.sleep(max(1.0, wait))
 
 

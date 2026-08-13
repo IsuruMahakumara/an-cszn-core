@@ -4,7 +4,7 @@ ROLE:        pure math — no network
 NODES:
   signal  IN  closes, btc, prev_w     OUT  weights, z, beta
   risk    IN  margin                  OUT  collateral, gross
-  orders  IN  weights, prices, pos, gross  OUT  order list
+  orders  IN  weights, prices, pos, entry, upnl, gross  OUT  order list
 """
 
 from __future__ import annotations
@@ -85,7 +85,11 @@ def apply_weight_deadband(
     old = old_w.reindex(new_w.index).fillna(0.0)
     out = new_w.copy()
     for s in out.index:
-        if abs(float(out[s]) - float(old[s])) < band:
+        new = float(out[s])
+        # Signal off wins: never restore a name the sparse z already zeroed.
+        if abs(new) < 1e-12:
+            continue
+        if abs(new - float(old[s])) < band:
             out[s] = old[s]
     g = float(out.abs().sum())
     if g > 1e-12:
@@ -175,8 +179,8 @@ def cap_name_weights(w: pd.Series, name_frac: float = config.NAME_FRAC) -> pd.Se
 
 # ═══════════════════════════════════════════════════════════════════
 # NODE: orders
-# IN:  target weights, marks, open qty, gross budget
-# OUT: list of {symbol, side, qty, px, delta_notional, ...}
+# IN:  target weights, marks, open qty, entry, upnl, gross budget
+# OUT: list of {symbol, side, qty, px, delta_notional, exit_reason, ...}
 # ═══════════════════════════════════════════════════════════════════
 
 
@@ -200,23 +204,73 @@ def rebalance_orders(
     pos_qty: dict,
     gross_notional: float,
     min_notional_by_sym: dict[str, float] | None = None,
+    entry_px: dict | None = None,
+    upnl: dict | None = None,
 ) -> list[dict]:
-    # IN: weights + book → OUT: economic order stubs
+    # IN: weights + book → OUT: order stubs (closes before adds)
     min_notional_by_sym = min_notional_by_sym or {}
+    entry_px = entry_px or {}
+    upnl = upnl or {}
     tw = cap_name_weights(target_w)
+    # Open names missing from the weight index still need a flatten path.
+    for s in pos_qty:
+        if s not in tw.index:
+            tw.loc[s] = 0.0
     orders = []
     for sym, weight in tw.items():
+        if sym not in price.index:
+            continue
         px = float(price[sym])
         if px <= 0:
             continue
-        tgt = float(weight) * gross_notional
-        cur = float(pos_qty.get(sym, 0.0)) * px
+        qty = float(pos_qty.get(sym, 0.0))
+        # Signed notional at mark: long > 0, short < 0.
+        cur = qty * px
+        tgt_w = float(weight)
+        entry = float(entry_px.get(sym, 0.0))
+        # Prefer venue unrealized; else mark vs entry.
+        if sym in upnl:
+            pnl = float(upnl[sym])
+        elif abs(qty) > 1e-12 and entry > 0:
+            pnl = qty * (px - entry)
+        else:
+            pnl = None
+        reason = "rebalance"
+
+        # Per-name stop: flatten if unrealized ≤ −STOP_PCT of that name's notional.
+        if abs(qty) > 1e-12:
+            notion = abs(qty) * (entry if entry > 0 else px)
+            if notion > 1e-12 and pnl is not None and pnl / notion <= -config.STOP_PCT:
+                tgt_w = 0.0
+                reason = "stop"
+
+        # Signal off: target is flat while a position is still open.
+        if reason != "stop" and abs(tgt_w) < 1e-12 and abs(qty) > 1e-12:
+            reason = "signal_off"
+
+        tgt = tgt_w * gross_notional
+        # No add to losers: never increase |qty|, and never flip through zero.
+        if abs(qty) > 1e-12 and pnl is not None and pnl < 0 and reason != "stop":
+            new_qty = tgt / px
+            # Opposite sign while red → flatten this cycle, do not reverse.
+            if new_qty * qty < -1e-12:
+                tgt = 0.0
+                tgt_w = 0.0
+                reason = "rebalance"
+            elif abs(new_qty) > abs(qty) + 1e-12:
+                continue
+
         delta = tgt - cur
+        if abs(delta) < 1e-12:
+            continue
+        increasing = abs(tgt) > abs(cur) + 1e-8
         floor = cost_floor(
             delta, min_notional_by_sym.get(sym, config.MIN_NOTIONAL), gross_notional
         )
-        if abs(delta) < floor:
+        # Cost floor only on adds / reshuffles, never on exits or reduces.
+        if increasing and abs(delta) < floor:
             continue
+        reducing = abs(tgt) < abs(cur) - 1e-12
         orders.append(
             {
                 "symbol": sym,
@@ -225,7 +279,12 @@ def rebalance_orders(
                 "px": px,
                 "delta_notional": delta,
                 "floor": floor,
-                "target_w": float(weight),
+                "target_w": tgt_w,
+                "exit_reason": reason,
+                "reducing": reducing,
             }
         )
+    # Closes first so IM from covers is free before any add.
+    rank = {"stop": 0, "signal_off": 1, "rebalance": 2}
+    orders.sort(key=lambda o: (0 if o["reducing"] else 1, rank.get(o["exit_reason"], 2)))
     return orders

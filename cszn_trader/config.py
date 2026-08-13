@@ -65,9 +65,14 @@ COST_MULT = float(os.getenv("COST_MULT", "10.0"))
 WEIGHT_DEADBAND = float(os.getenv("WEIGHT_DEADBAND", "0.03"))
 MIN_REBALANCE_USDT = float(os.getenv("MIN_REBALANCE_USDT", "40"))
 MIN_NOTIONAL = float(os.getenv("MIN_NOTIONAL", "5"))
+# Per-name hard stop as a fraction of that name's notional. No take-profit.
+STOP_PCT = float(os.getenv("STOP_PCT", "0.012"))
 
-# ── clock + halt ────────────────────────────────────────────────────
-REBALANCE_S = int(os.getenv("REBALANCE_SECONDS", "14400"))
+# ── poll clock + halt ───────────────────────────────────────────────
+# Watch often (default 10m). Adds wait for Z_MIN + deadband + cost floor.
+# Exits (signal_off / stop) fire without those gates. No take-profit.
+# REBALANCE_SECONDS kept as alias for older env files.
+POLL_S = int(os.getenv("POLL_SECONDS", os.getenv("REBALANCE_SECONDS", "600")))
 MAX_DRAWDOWN_FRAC = float(os.getenv("MAX_DRAWDOWN_FRAC", "0.03"))
 DRY_RUN = os.getenv("DRY_RUN", "1") not in ("0", "false", "False")
 RUN_ONCE = os.getenv("RUN_ONCE", "0") in ("1", "true", "True")
