@@ -13,6 +13,7 @@ flowchart LR
   ops["ops<br/>state + logs"]
   strategy["strategy<br/>signal / risk / orders"]
   run["run<br/>clock + wire"]
+  offline["offline_check<br/>no network"]
 
   config -->|constants| exchange
   config -->|constants| strategy
@@ -24,46 +25,82 @@ flowchart LR
   strategy -->|weights z beta collateral gross orders| run
   run -->|market orders| exchange
   run -->|updated state cycle log| ops
+  config -->|constants| offline
+  offline -->|synthetic closes| strategy
 ```
-
-Inside `strategy.py` the same idea repeats as three sub-nodes:
-
-| Sub-node | Input | Output |
-|---|---|---|
-| signal | closes, Bitcoin series, prior weights | weights, z-scores, betas |
-| risk | margin, positions, marks | collateral, gross, derived initial margin |
-| orders | weights, prices, positions, gross | order list |
 
 ## Files
 
-| File | Role |
-|---|---|
-| `cszn_trader/config.py` | Settings and traded name list. |
-| `cszn_trader/strategy.py` | Factor strip, ranks, size, cost gates. |
-| `cszn_trader/exchange.py` | Demo Hypertext Transfer Protocol client. |
-| `cszn_trader/ops.py` | Disk state, cycle logs, drawdown halt. |
-| `cszn_trader/run.py` | Wire the graph on a fixed clock. |
-| `cszn_trader/offline_check.py` | Offline math check without the exchange. |
+| File | Role | Input | Output |
+|---|---|---|---|
+| `cszn_trader/config.py` | Knobs only. | Environment file. | Module constants. |
+| `cszn_trader/strategy.py` | Pure math. | Closes, margin, weights, prices. | Weights, budgets, order stubs. |
+| `cszn_trader/exchange.py` | Demo Hypertext Transfer Protocol client. | Credentials and method arguments. | Candles, marks, balances, fills. |
+| `cszn_trader/ops.py` | Persistence and kill switch. | State dictionary and margin. | Updated state and log path. |
+| `cszn_trader/run.py` | Wires the graph on a clock. | Client and state. | Orders, logs, sleep until wake time. |
+| `cszn_trader/offline_check.py` | Offline smoke test. | Synthetic prices. | Printed ranks and orders. |
 
-## Cycle flow
+There is no `binance_futures.py`. The adapter lives in `exchange.py`.
+
+## Strategy sub-nodes
+
+| Sub-node | Methods | Input | Output |
+|---|---|---|---|
+| signal | `rolling_beta`, `residuals`, `residual_signal`, `cross_sectional_z`, `sparse_z`, `dollar_neutral_weights`, `beta_neutralize`, `apply_weight_deadband`, `target_weights` | Asset closes, Bitcoin closes, prior weights | Unit-gross weights, z-scores, betas |
+| risk | `collateral_from_margin`, `gross_notional_budget`, `derived_im`, `cap_name_weights` | Margin, positions, marks | Collateral cap, gross budget, estimated initial margin |
+| orders | `cost_floor`, `rebalance_orders` | Weights, prices, positions, gross | Order stub list |
+
+Beta hedge runs only inside names that pass the z-score floor, so weak names stay at zero weight and portfolio Bitcoin exposure stays near zero on the active set.
+
+## Exchange client
+
+| Method | Input | Output |
+|---|---|---|
+| `klines` | Symbol, interval, limit | Candle rows |
+| `mark` | Symbol | Mark price |
+| `filters` | Symbol | Lot step and minimum notional |
+| `margin_balance` / `available_balance` | None | Account balances |
+| `positions` | None | Signed quantity by symbol |
+| `set_leverage` / `market` | Symbol, side, quantity | Order response |
+| `income_since` | Start time | Sums by income type |
+| `detect_hedge_mode` | None | Hedge-mode flag |
+
+## Operations
+
+| Method | Input | Output |
+|---|---|---|
+| `load_state` / `save_state` | Path or state | State dictionary or disk write |
+| `weights_from_state` | State | Prior weight series |
+| `log_cycle` | Cycle row | Append path under `logs/cszn/` |
+| `update_peak_and_kill` | State and margin | State, possibly halted |
+
+## Run cycle stages
+
+`once` walks these labeled nodes in order: market, signal, halt, risk, orders, execute, persist. `main` boots the client then sleeps until the next `yyyy-mm-dd-hh-mm-ss` clock stamp.
 
 ```mermaid
 flowchart TD
-  A[Boot: load config and state] --> B[Market: pull demo candles and marks]
+  A[Boot: config and state] --> B[Market: demo candles and marks]
   B --> C[Signal: beta strip and residual ranks]
   C --> D[Signal: sparse z-scores and dollar-neutral weights]
-  D --> E{Halt?}
-  E -->|yes| F[Flatten open risk then persist]
+  D --> E{Drawdown halt?}
+  E -->|yes| F[Flatten all positions then persist]
   E -->|no| G[Risk: collateral and gross caps]
   G --> H[Orders: cost gate then lot floor]
   H --> I{Dry run?}
   I -->|yes| J[Log targets only]
-  I -->|no| K[Execute market orders]
+  I -->|no| K[Execute market orders under initial-margin cap]
   J --> L[Persist state and sleep until clock]
   K --> L
   F --> L
 ```
 
+## Default knobs
+
+One-hour bars. Beta window forty-eight. Residual lookback twelve. Z-score clip three and minimum one. Collateral five percent of margin with a two-hundred United States dollar ceiling. Leverage five. Gross at most twenty-five percent of margin. Weight deadband three percent. Minimum rebalance forty United States dollars. Rebalance every four hours. Halt and flatten after three percent drawdown from peak margin. Dry run defaults on.
+
+Traded universe is eighteen liquid perpetual names plus Bitcoin as benchmark only. Credentials load from the project-root `.env` file. Demo host defaults to `https://demo-fapi.binance.com` for both market data and orders.
+
 ## Limits
 
-There is no automated proof that the residual signal earns money after costs. Demo candle history is short for stable beta. Halt flattens when live; dry run only logs the halt.
+There is no automated proof that the residual signal earns money after costs. Demo candle history is short for stable beta. Universe liquidity is not re-screened every cycle. Clearing a halt requires editing or deleting `state.json`.
