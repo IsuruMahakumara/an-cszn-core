@@ -1,77 +1,54 @@
-"""Knobs for residual CSZN demo futures trading.
+"""Knobs for demo CSZN residual book. Credentials from project-root .env."""
 
-Simons discipline: fixed rules, fixed schedule, no discretionary overrides.
-"""
-
-from __future__ import annotations
-
-import os
 from pathlib import Path
-
+import os
 from dotenv import load_dotenv
 
-# Project root .env (API_KEY / SECRET_KEY)
-_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(_ROOT / ".env")
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-# --- credentials (demo account) ---
 API_KEY = os.getenv("API_KEY", "")
 SECRET_KEY = os.getenv("SECRET_KEY", "")
 
-# Demo futures REST (orders / account). Market data may use prod klines.
-FAPI_BASE = os.getenv("BINANCE_FAPI_URL", "https://demo-fapi.binance.com")
-# Public klines: prod has long history; override if your demo serves klines.
-MARKET_BASE = os.getenv("BINANCE_MARKET_URL", "https://fapi.binance.com")
+# --- 2. one venue: demo for BOTH orders and klines/marks ---
+FAPI_BASE = os.getenv("BINANCE_FAPI_URL", "https://demo-fapi.binance.com").rstrip("/")
+# default market host = trade host (no prod/demo mix)
+MARKET_BASE = os.getenv("BINANCE_MARKET_URL", FAPI_BASE).rstrip("/")
 
-# BTC is the market factor only — never in the trade universe.
 BENCHMARK = "BTCUSDT"
-
-# Liquid USDT-M perpetual basket (cross-section for residual ranks).
 UNIVERSE = [
-    "ETHUSDT",
-    "BNBUSDT",
-    "SOLUSDT",
-    "XRPUSDT",
-    "DOGEUSDT",
-    "ADAUSDT",
-    "AVAXUSDT",
-    "LINKUSDT",
-    "DOTUSDT",
-    "NEARUSDT",
-    "APTUSDT",
-    "SUIUSDT",
-    "LTCUSDT",
-    "ATOMUSDT",
-    "FILUSDT",
+    "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT",
+    "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "NEARUSDT",
+    "APTUSDT", "SUIUSDT", "LTCUSDT", "ATOMUSDT", "FILUSDT",
 ]
 
-# Bar interval for residual window (short-horizon statistical edge).
-KLINE_INTERVAL = os.getenv("KLINE_INTERVAL", "15m")
-# Bars to pull (beta window + residual lookback + buffer).
-KLINE_LIMIT = int(os.getenv("KLINE_LIMIT", "120"))
-
-# Rolling β window W (CSZN §1).
+INTERVAL = os.getenv("KLINE_INTERVAL", "15m")
+# rolling β window W (CSZN §1)
 BETA_WINDOW = int(os.getenv("BETA_WINDOW", "48"))
-# Residual return lookback (short window rank signal).
+# residual lookback for signal strength (bars of ε summed)
 RESID_LOOKBACK = int(os.getenv("RESID_LOOKBACK", "12"))
+# need β window + residual lookback + buffer bars from demo
+KLINE_LIMIT = BETA_WINDOW + RESID_LOOKBACK + 10
 
-# Gross leverage L_target (CSZN §5). Final weight scale = L / 2 each side.
-LEVERAGE_TARGET = float(os.getenv("LEVERAGE_TARGET", "1.0"))
-# Exchange min notional filter |ΔV| (USDT).
-MIN_NOTIONAL = float(os.getenv("MIN_NOTIONAL", "20.0"))
-# Winsorize cross-sectional Z (CSZN §3).
-Z_CLIP = 3.0
+# CSZN §3 winsorize
+Z_CLIP = float(os.getenv("Z_CLIP", "3.0"))
 
-# Fixed-clock rebalance period (seconds). Default 15m aligns with bars.
-REBALANCE_SECONDS = int(os.getenv("REBALANCE_SECONDS", "900"))
+# --- 5. collateral from account margin balance ---
+# fraction of margin balance allowed as initial-margin budget (Simons: hard risk budget)
+COLLATERAL_FRAC = float(os.getenv("COLLATERAL_FRAC", "0.10"))
+# optional absolute ceiling USDT; 0 = disabled (purely margin-derived)
+MAX_COLLATERAL_USDT = float(os.getenv("MAX_COLLATERAL_USDT", "0"))
+# exchange leverage amplifies notional from that collateral only
+EXCHANGE_LEVERAGE = int(os.getenv("EXCHANGE_LEVERAGE", "10"))
 
-# 1 = compute orders only; 0 = send market orders on demo.
+# --- 6. cost gate ---
+# taker fee round-trip estimate per name (bps of notional); demo often ~4–8
+FEE_BPS = float(os.getenv("FEE_BPS", "8"))
+# require |ΔV| >= COST_MULT × estimated fee notional drag before trading
+COST_MULT = float(os.getenv("COST_MULT", "3.0"))
+MIN_NOTIONAL = float(os.getenv("MIN_NOTIONAL", "5"))
+
+# fixed clock (wider default: less churn)
+REBALANCE_S = int(os.getenv("REBALANCE_SECONDS", "3600"))
+
 DRY_RUN = os.getenv("DRY_RUN", "1") not in ("0", "false", "False")
-# 1 = single rebalance then exit (useful for first wiring check).
 RUN_ONCE = os.getenv("RUN_ONCE", "0") in ("1", "true", "True")
-
-# Signed-request clock skew tolerance (ms).
-RECV_WINDOW = int(os.getenv("RECV_WINDOW", "5000"))
-
-# Market orders only — mechanical fill, no limit discretion.
-ORDER_TYPE = "MARKET"

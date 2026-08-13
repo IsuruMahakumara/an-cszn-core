@@ -1,4 +1,4 @@
-"""Minimal Binance USDT-M futures REST client (demo + public market data)."""
+"""Binance USDT-M demo REST: same host for klines, marks, account, orders."""
 
 from __future__ import annotations
 
@@ -13,41 +13,20 @@ import requests
 import config
 
 
-class BinanceFutures:
-    """Thin HMAC client. No abstractions beyond request + sign."""
+class Client:
+    def __init__(self) -> None:
+        # single demo venue for signal + execution
+        self.base = config.FAPI_BASE.rstrip("/")
+        self.mkt = config.MARKET_BASE.rstrip("/")
+        self.secret = config.SECRET_KEY
+        self.s = requests.Session()
+        self.s.headers["X-MBX-APIKEY"] = config.API_KEY
+        # cache exchangeInfo filters
+        self._filters: dict[str, dict[str, float]] | None = None
+        # hedgeMode from positionRisk dualSidePosition if detectable
+        self.hedge_mode: bool | None = None
 
-    def __init__(
-        self,
-        api_key: str = config.API_KEY,
-        secret: str = config.SECRET_KEY,
-        fapi_base: str = config.FAPI_BASE,
-        market_base: str = config.MARKET_BASE,
-    ) -> None:
-        # Trading host (demo account keys)
-        self.fapi = fapi_base.rstrip("/")
-        # Public kline host (can differ from demo)
-        self.market = market_base.rstrip("/")
-        self.api_key = api_key
-        self.secret = secret
-        self.session = requests.Session()
-        self.session.headers.update({"X-MBX-APIKEY": api_key})
-
-    def _sign(self, params: dict[str, Any]) -> dict[str, Any]:
-        # Millisecond timestamp required on every signed call
-        params = dict(params)
-        params["timestamp"] = int(time.time() * 1000)
-        # Allow modest local/server clock skew
-        params.setdefault("recvWindow", config.RECV_WINDOW)
-        # Canonical query string before HMAC
-        query = urlencode(params, doseq=True)
-        # HMAC-SHA256 with secret key
-        sig = hmac.new(
-            self.secret.encode(), query.encode(), hashlib.sha256
-        ).hexdigest()
-        params["signature"] = sig
-        return params
-
-    def _request(
+    def _req(
         self,
         method: str,
         path: str,
@@ -55,114 +34,123 @@ class BinanceFutures:
         signed: bool = False,
         base: str | None = None,
     ) -> Any:
-        # Default host is trading base; market data uses market_base
-        host = (base or self.fapi).rstrip("/")
+        host = (base or self.base).rstrip("/")
         params = dict(params or {})
-        # Attach signature when endpoint is private
         if signed:
-            params = self._sign(params)
-        url = f"{host}{path}"
-        # Single attempt — fail loud; Simons systems log errors, do not invent fills
-        r = self.session.request(method, url, params=params, timeout=30)
-        # Raise HTTP errors with body for demo debugging
+            params["timestamp"] = int(time.time() * 1000)
+            params["recvWindow"] = 5000
+            q = urlencode(params)
+            params["signature"] = hmac.new(
+                self.secret.encode(), q.encode(), hashlib.sha256
+            ).hexdigest()
+        r = self.s.request(method, f"{host}{path}", params=params, timeout=30)
         if r.status_code >= 400:
             raise RuntimeError(f"{method} {path} {r.status_code}: {r.text}")
         return r.json()
 
-    # ----- public market data -----
+    # ----- market (demo host) -----
 
-    def klines(
-        self, symbol: str, interval: str, limit: int
-    ) -> list[list[Any]]:
-        # Close-time series from public futures API
-        return self._request(
+    def klines(self, symbol: str, interval: str, limit: int) -> list:
+        return self._req(
             "GET",
             "/fapi/v1/klines",
             {"symbol": symbol, "interval": interval, "limit": limit},
-            base=self.market,
+            base=self.mkt,
         )
 
-    def mark_price(self, symbol: str) -> float:
-        # Single mark for notional conversion
-        data = self._request(
-            "GET",
-            "/fapi/v1/premiumIndex",
-            {"symbol": symbol},
-            base=self.market,
+    def mark(self, symbol: str) -> float:
+        d = self._req(
+            "GET", "/fapi/v1/premiumIndex", {"symbol": symbol}, base=self.mkt
         )
-        return float(data["markPrice"])
+        return float(d["markPrice"])
 
-    def exchange_filters(self, symbol: str) -> dict[str, float]:
-        # LOT_SIZE step + MIN_NOTIONAL for qty flooring
-        info = self._request(
-            "GET", "/fapi/v1/exchangeInfo", base=self.market
-        )
+    def _load_filters(self) -> dict[str, dict[str, float]]:
+        if self._filters is not None:
+            return self._filters
+        info = self._req("GET", "/fapi/v1/exchangeInfo", base=self.mkt)
+        out: dict[str, dict[str, float]] = {}
         for s in info["symbols"]:
-            if s["symbol"] != symbol:
-                continue
-            step = 0.001
-            min_notional = config.MIN_NOTIONAL
+            step, min_n = 0.001, config.MIN_NOTIONAL
             for f in s["filters"]:
                 if f["filterType"] == "LOT_SIZE":
                     step = float(f["stepSize"])
                 if f["filterType"] in ("MIN_NOTIONAL", "NOTIONAL"):
-                    min_notional = float(
-                        f.get("notional") or f.get("minNotional") or min_notional
-                    )
-            return {"stepSize": step, "minNotional": min_notional}
-        raise KeyError(f"symbol not found: {symbol}")
+                    min_n = float(f.get("notional") or f.get("minNotional") or min_n)
+            out[s["symbol"]] = {"stepSize": step, "minNotional": min_n}
+        self._filters = out
+        return out
 
-    # ----- private account / positions / orders -----
+    def filters(self, symbol: str) -> dict[str, float]:
+        return self._load_filters().get(
+            symbol, {"stepSize": 0.001, "minNotional": config.MIN_NOTIONAL}
+        )
 
-    def account(self) -> dict[str, Any]:
-        return self._request("GET", "/fapi/v2/account", signed=True)
+    # ----- account -----
 
-    def balance_usdt(self) -> float:
-        # Wallet equity proxy: available + cross wallet when present
-        acct = self.account()
-        # totalWalletBalance is standard on v2 account
-        if "totalWalletBalance" in acct:
-            return float(acct["totalWalletBalance"])
-        # Fallback: sum USDT asset balances
-        for a in acct.get("assets", []):
-            if a.get("asset") == "USDT":
-                return float(a.get("walletBalance", 0.0))
+    def account(self) -> dict:
+        return self._req("GET", "/fapi/v2/account", signed=True)
+
+    def margin_balance(self) -> float:
+        """Account margin balance — source of collateral budget."""
+        a = self.account()
+        # prefer totalMarginBalance; fall back to wallet
+        for key in ("totalMarginBalance", "totalWalletBalance"):
+            if key in a and a[key] is not None:
+                return float(a[key])
         return 0.0
 
+    def available_balance(self) -> float:
+        a = self.account()
+        return float(a.get("availableBalance") or 0.0)
+
     def positions(self) -> dict[str, float]:
-        # Map symbol -> signed position amount (contracts / base qty)
-        risk = self._request("GET", "/fapi/v2/positionRisk", signed=True)
+        # symbol -> signed qty (one-way: net; hedge: net both sides)
+        risk = self._req("GET", "/fapi/v2/positionRisk", signed=True)
         out: dict[str, float] = {}
         for p in risk:
             amt = float(p.get("positionAmt", 0.0))
-            if abs(amt) > 0:
-                out[p["symbol"]] = amt
+            if abs(amt) < 1e-12:
+                continue
+            sym = p["symbol"]
+            # net if multiple sides returned
+            out[sym] = out.get(sym, 0.0) + amt
         return out
 
-    def set_leverage(self, symbol: str, leverage: int) -> Any:
-        # Cap per-symbol futures leverage (risk budget, not signal)
-        return self._request(
+    def initial_margin_used(self) -> float:
+        total = 0.0
+        for p in self._req("GET", "/fapi/v2/positionRisk", signed=True):
+            total += float(p.get("initialMargin") or 0.0)
+        return total
+
+    def detect_hedge_mode(self) -> bool:
+        # dualSidePosition endpoint
+        try:
+            d = self._req("GET", "/fapi/v1/positionSide/dual", signed=True)
+            self.hedge_mode = bool(d.get("dualSidePosition"))
+        except Exception:
+            self.hedge_mode = False
+        return bool(self.hedge_mode)
+
+    def set_leverage(self, symbol: str, lev: int) -> Any:
+        return self._req(
             "POST",
             "/fapi/v1/leverage",
-            {"symbol": symbol, "leverage": leverage},
+            {"symbol": symbol, "leverage": int(lev)},
             signed=True,
         )
 
-    def market_order(
-        self, symbol: str, side: str, quantity: float
-    ) -> Any:
-        # Mechanical market order — side BUY or SELL, one-way positionSide BOTH
-        qty_str = _fmt_qty(quantity)
-        params = {
+    def market(self, symbol: str, side: str, qty: float, reduce_only: bool = False) -> Any:
+        q = f"{qty:.8f}".rstrip("0").rstrip(".")
+        params: dict[str, Any] = {
             "symbol": symbol,
             "side": side,
-            "type": config.ORDER_TYPE,
-            "quantity": qty_str,
+            "type": "MARKET",
+            "quantity": q,
         }
-        return self._request("POST", "/fapi/v1/order", params, signed=True)
-
-
-def _fmt_qty(q: float) -> str:
-    # Avoid scientific notation on the wire
-    s = f"{q:.8f}".rstrip("0").rstrip(".")
-    return s if s else "0"
+        # hedge-mode hygiene: open with positionSide; flats use reduce-only path
+        if self.hedge_mode:
+            # BUY opens/adds LONG; SELL opens/adds SHORT
+            params["positionSide"] = "LONG" if side == "BUY" else "SHORT"
+        elif reduce_only:
+            params["reduceOnly"] = "true"
+        return self._req("POST", "/fapi/v1/order", params, signed=True)

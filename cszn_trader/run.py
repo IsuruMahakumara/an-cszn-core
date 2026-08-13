@@ -1,164 +1,157 @@
-"""Load klines → residual CSZN weights → market rebalance on a fixed clock.
-
-No discretionary gates. Rebalance only when the clock fires.
-"""
+"""Fixed-clock CSZN residual L/S on Binance demo (signal + fills same host)."""
 
 from __future__ import annotations
 
 import math
 import time
-from datetime import datetime, timezone
 
 import pandas as pd
 
 import config
-from binance_futures import BinanceFutures
-from strategy import orders_from_weights, target_weights_from_closes
+from binance_futures import Client
+from strategy import (
+    collateral_from_margin,
+    gross_notional_from_collateral,
+    rebalance_orders,
+    target_weights,
+)
 
 
-def floor_step(qty: float, step: float) -> float:
-    # LOT_SIZE floor: never round up into notional the account did not size for
+def pull_closes(client: Client) -> tuple[pd.DataFrame, pd.Series]:
+    book = {}
+    for sym in config.UNIVERSE + [config.BENCHMARK]:
+        raw = client.klines(sym, config.INTERVAL, config.KLINE_LIMIT)
+        book[sym] = pd.Series(
+            [float(x[4]) for x in raw],
+            index=[int(x[0]) for x in raw],
+        )
+    df = pd.DataFrame(book).dropna()
+    return df.drop(columns=[config.BENCHMARK]), df[config.BENCHMARK]
+
+
+def floor_qty(qty: float, step: float) -> float:
     if step <= 0:
         return qty
     return math.floor(qty / step + 1e-12) * step
 
 
-def pull_closes(
-    client: BinanceFutures, symbols: list[str], interval: str, limit: int
-) -> tuple[pd.DataFrame, pd.Series]:
-    """Close prices for universe + BTC benchmark index-aligned on open time."""
-    frames: dict[str, pd.Series] = {}
-    # Fetch each symbol sequentially (MVP; no async)
-    for sym in symbols + [config.BENCHMARK]:
-        raw = client.klines(sym, interval, limit)
-        # kline: [open_time, o, h, l, c, ...]
-        idx = [int(row[0]) for row in raw]
-        closes = [float(row[4]) for row in raw]
-        frames[sym] = pd.Series(closes, index=idx, name=sym)
+def once(client: Client) -> None:
+    assets, btc = pull_closes(client)
+    print(f"bars={len(assets)} venue={config.MARKET_BASE}")
 
-    # Align on intersection of timestamps so β regression is clean
-    book = pd.DataFrame(frames).dropna(how="any")
-    mkt = book[config.BENCHMARK]
-    assets = book.drop(columns=[config.BENCHMARK])
-    return assets, mkt
+    # 1+3+4: real β-strip residual → Z → dollar-neutral → β-hedge
+    w, z, beta = target_weights(assets, btc)
+    print("z:\n", z.sort_values(ascending=False).to_string())
+    print("beta:\n", beta.reindex(w.index).to_string())
+    print("w:\n", w[w.abs() > 1e-12].sort_values(ascending=False).to_string())
 
-
-def run_once(client: BinanceFutures) -> None:
-    """One mechanical rebalance cycle."""
-    ts = datetime.now(timezone.utc).isoformat()
-    print(f"\n=== rebalance {ts} ===")
-
-    # 1) Market data: short-window residual universe
-    closes, mkt = pull_closes(
-        client,
-        config.UNIVERSE,
-        config.KLINE_INTERVAL,
-        config.KLINE_LIMIT,
+    # 5: collateral from account margin balance
+    margin = client.margin_balance()
+    avail = client.available_balance()
+    collat = collateral_from_margin(margin)
+    gross = gross_notional_from_collateral(collat)
+    im_used = client.initial_margin_used()
+    print(
+        f"margin_bal={margin:.2f} avail={avail:.2f} "
+        f"collat_cap={collat:.2f} ({config.COLLATERAL_FRAC:.0%} of margin) "
+        f"gross={gross:.2f} lev={config.EXCHANGE_LEVERAGE}x im_used={im_used:.2f}"
     )
-    print(f"bars={len(closes)} symbols={list(closes.columns)}")
-
-    # 2) Signal pipeline (CSZN + residual window rank)
-    weights, z, betas = target_weights_from_closes(
-        closes,
-        mkt,
-        beta_window=config.BETA_WINDOW,
-        resid_lookback=config.RESID_LOOKBACK,
-        leverage=config.LEVERAGE_TARGET,
-    )
-    print("z-scores:\n", z.sort_values(ascending=False).to_string())
-    print("weights:\n", weights.sort_values(ascending=False).to_string())
-    print("betas:\n", betas.reindex(weights.index).to_string())
-
-    # 3) Equity for notional sizing (Simons: size to capital, not hope)
-    equity = client.balance_usdt()
-    print(f"equity_usdt={equity:.4f}")
-    if equity <= 0:
-        print("no equity — skip orders")
+    if collat <= 0 or gross <= 0:
+        print("no collateral budget — skip")
         return
 
-    # 4) Marks + open positions
-    prices = pd.Series(
-        {s: client.mark_price(s) for s in weights.index}, dtype=float
-    )
-    pos_map = client.positions()
-    positions = pd.Series(
-        {s: pos_map.get(s, 0.0) for s in weights.index}, dtype=float
-    )
+    pos = client.positions()
+    names = set(w.index) | set(pos)
+    px = pd.Series({s: client.mark(s) for s in names})
+    full_w = w.reindex(list(names)).fillna(0.0)
 
-    # 5) Target orders with min-notional dust filter
-    orders = orders_from_weights(
-        weights, prices, positions, equity, config.MIN_NOTIONAL
-    )
-    if orders.empty:
-        print("no orders above min notional")
-        return
-
-    print("orders:\n", orders.to_string())
-
-    # 6) Execute market orders (demo), or stop after print when DRY_RUN.
+    # per-symbol exchange mins for cost gate
+    mins = {s: client.filters(s)["minNotional"] for s in names}
+    orders = rebalance_orders(full_w, px, pos, gross, mins)
+    print("orders:", orders)
     if config.DRY_RUN:
-        print("DRY_RUN=1 — not sending orders")
+        print("DRY_RUN — no send")
         return
 
-    for sym, row in orders.iterrows():
-        # Exchange step size so qty is accepted
-        filt = client.exchange_filters(sym)
+    # 7: execution hygiene
+    im_est = im_used
+    for o in orders:
+        filt = client.filters(o["symbol"])
         step = filt["stepSize"]
         min_n = max(filt["minNotional"], config.MIN_NOTIONAL)
-        qty = floor_step(float(row["qty"]), step)
-        # Re-check notional after floor
-        notional = qty * float(row["price"])
+        qty = floor_qty(float(o["qty"]), step)
+        notional = qty * o["px"]
         if qty <= 0 or notional < min_n:
-            print(f"skip {sym}: qty={qty} notional={notional:.4f} < {min_n}")
+            print("skip lot/notional", o["symbol"], qty, notional)
             continue
-        side = str(row["side"])
-        try:
-            # Optional: set modest exchange leverage ceiling
-            client.set_leverage(sym, max(1, int(math.ceil(config.LEVERAGE_TARGET * 2))))
-        except Exception as e:
-            # Demo may reject leverage if already set — continue
-            print(f"leverage warn {sym}: {e}")
-        try:
-            resp = client.market_order(sym, side, qty)
-            print(f"SENT {side} {sym} qty={qty} -> {resp.get('orderId', resp)}")
-        except Exception as e:
-            print(f"ORDER FAIL {side} {sym} qty={qty}: {e}")
 
+        cur_amt = float(pos.get(o["symbol"], 0.0))
+        new_amt = cur_amt + qty if o["side"] == "BUY" else cur_amt - qty
+        reducing = abs(new_amt) < abs(cur_amt) - 1e-12
+        add_im = notional / max(config.EXCHANGE_LEVERAGE, 1)
+        # hard IM block: never lock more collateral than margin-derived cap
+        if not reducing and im_est + add_im > collat + 1e-6:
+            print(f"BLOCK {o['symbol']}: im {im_est:.2f}+{add_im:.2f} > collat {collat:.2f}")
+            continue
+        # available balance soft check on risk adds
+        if not reducing and avail + 1e-6 < add_im:
+            print(f"BLOCK {o['symbol']}: need IM {add_im:.2f} > avail {avail:.2f}")
+            continue
 
-def sleep_until_next_clock(period_s: int) -> None:
-    """Fixed wall-clock alignment: rebalance at epoch multiples of period."""
-    now = time.time()
-    # Next boundary strictly after now
-    nxt = (math.floor(now / period_s) + 1) * period_s
-    wait = max(1.0, nxt - now)
-    print(f"sleep {wait:.1f}s until next clock ({period_s}s)")
-    time.sleep(wait)
+        try:
+            client.set_leverage(o["symbol"], config.EXCHANGE_LEVERAGE)
+        except Exception as e:
+            print("leverage warn", o["symbol"], e)
+
+        try:
+            resp = client.market(
+                o["symbol"], o["side"], qty, reduce_only=reducing and not client.hedge_mode
+            )
+            print("SENT", o["side"], o["symbol"], qty, resp.get("orderId"))
+            pos[o["symbol"]] = new_amt
+            im_est = im_est - add_im if reducing else im_est + add_im
+            if not reducing:
+                avail = max(0.0, avail - add_im)
+        except Exception as e:
+            print("FAIL", o["symbol"], e)
 
 
 def main() -> None:
-    # Credential gate — refuse silent empty keys
     if not config.API_KEY or not config.SECRET_KEY:
-        raise SystemExit("API_KEY / SECRET_KEY missing in .env")
+        raise SystemExit("missing API_KEY/SECRET_KEY in .env")
+    # refuse accidental prod/demo split unless user forced both
+    if config.MARKET_BASE != config.FAPI_BASE:
+        print(
+            "WARN: MARKET_BASE != FAPI_BASE — signal venue differs from order venue:",
+            config.MARKET_BASE,
+            config.FAPI_BASE,
+        )
 
-    client = BinanceFutures()
-    print("CSZN residual-vs-BTC futures demo")
-    print(f"fapi={config.FAPI_BASE}")
-    print(f"market={config.MARKET_BASE}")
-    print(f"interval={config.KLINE_INTERVAL} rebalance={config.REBALANCE_SECONDS}s")
-    print(f"dry_run={config.DRY_RUN} run_once={config.RUN_ONCE}")
-    print(f"universe={config.UNIVERSE}")
+    client = Client()
+    hedge = client.detect_hedge_mode()
+    print(
+        "CSZN residual demo",
+        f"fapi={config.FAPI_BASE}",
+        f"market={config.MARKET_BASE}",
+        f"hedge={hedge}",
+        f"dry_run={config.DRY_RUN}",
+        f"collat_frac={config.COLLATERAL_FRAC}",
+        f"lev={config.EXCHANGE_LEVERAGE}",
+        f"fee_bps={config.FEE_BPS}",
+        f"clock={config.REBALANCE_S}s",
+    )
 
-    # Immediate first pass, then fixed clock (unless RUN_ONCE)
     while True:
         try:
-            run_once(client)
+            once(client)
         except Exception as e:
-            # Log and continue — system must not die on one bad bar
-            print(f"cycle error: {e}")
+            print("error:", e)
         if config.RUN_ONCE:
-            print("RUN_ONCE — exit")
             return
-        sleep_until_next_clock(config.REBALANCE_SECONDS)
+        now = time.time()
+        wait = (math.floor(now / config.REBALANCE_S) + 1) * config.REBALANCE_S - now
+        print(f"sleep {wait:.0f}s")
+        time.sleep(max(1.0, wait))
 
 
 if __name__ == "__main__":

@@ -1,48 +1,45 @@
-"""Smoke-test signal math offline (no orders).
-
-python -m cszn_trader.offline_check  does not apply — run as script:
-  cd cszn_trader && python offline_check.py
-"""
-
-from __future__ import annotations
+"""Offline CSZN pipeline check (no API)."""
 
 import numpy as np
 import pandas as pd
 
-from strategy import orders_from_weights, target_weights_from_closes
+from strategy import (
+    collateral_from_margin,
+    gross_notional_from_collateral,
+    rebalance_orders,
+    target_weights,
+)
+import config
 
+rng = np.random.default_rng(0)
+n = 120
+idx = np.arange(n)
+# BTC path
+btc = pd.Series(50_000 + np.cumsum(rng.normal(0, 80, n)), index=idx)
 
-def main() -> None:
-    # Synthetic cointegrated-ish panel
-    rng = np.random.default_rng(7)
-    n = 100
-    idx = np.arange(n)
-    # BTC random walk
-    mkt = pd.Series(50_000 + np.cumsum(rng.normal(0, 100, n)), index=idx)
-    # Alts = beta * BTC + residual noise
-    cols = {}
-    true_beta = {"ETHUSDT": 1.1, "SOLUSDT": 1.4, "AVAXUSDT": 1.2, "LINKUSDT": 0.9}
-    for sym, b in true_beta.items():
-        res = np.cumsum(rng.normal(0, 0.5, n))
-        # Inject residual leader / lagger at the end
-        if sym == "SOLUSDT":
-            res[-12:] += np.linspace(0, 5, 12)
-        if sym == "LINKUSDT":
-            res[-12:] -= np.linspace(0, 5, 12)
-        cols[sym] = 100 + b * (mkt - mkt.iloc[0]) / 100 + res
-    closes = pd.DataFrame(cols, index=idx)
+# alts = true_beta * BTC move + idiosyncratic; SOL residual up, LINK down at end
+true_b = {"ETHUSDT": 1.1, "SOLUSDT": 1.4, "AVAXUSDT": 1.2, "LINKUSDT": 0.9}
+cols = {}
+for sym, b in true_b.items():
+    noise = np.cumsum(rng.normal(0, 0.15, n))
+    if sym == "SOLUSDT":
+        noise[-config.RESID_LOOKBACK :] += np.linspace(0, 2.5, config.RESID_LOOKBACK)
+    if sym == "LINKUSDT":
+        noise[-config.RESID_LOOKBACK :] -= np.linspace(0, 2.5, config.RESID_LOOKBACK)
+    cols[sym] = 100 + b * (btc - btc.iloc[0]) / 150 + noise
 
-    w, z, beta = target_weights_from_closes(closes, mkt, beta_window=30, resid_lookback=12)
-    print("z:\n", z.sort_values(ascending=False))
-    print("w:\n", w.sort_values(ascending=False))
-    print("beta:\n", beta)
-    print("sum w long", w.clip(lower=0).sum(), "short", w.clip(upper=0).sum())
+closes = pd.DataFrame(cols, index=idx)
+w, z, beta = target_weights(closes, btc)
+print("z\n", z.sort_values(ascending=False))
+print("beta\n", beta)
+print("w\n", w[w.abs() > 1e-12].sort_values(ascending=False))
+print("port_beta", float((w * beta).sum()))
 
-    prices = closes.iloc[-1]
-    pos = pd.Series(0.0, index=w.index)
-    orders = orders_from_weights(w, prices, pos, equity=10_000.0, min_notional=10.0)
-    print("orders:\n", orders)
-
-
-if __name__ == "__main__":
-    main()
+margin = 4166.0
+collat = collateral_from_margin(margin)
+gross = gross_notional_from_collateral(collat)
+print(
+    f"margin={margin} frac={config.COLLATERAL_FRAC} "
+    f"collat={collat} gross={gross} lev={config.EXCHANGE_LEVERAGE}"
+)
+print("orders", rebalance_orders(w, closes.iloc[-1], {}, gross))

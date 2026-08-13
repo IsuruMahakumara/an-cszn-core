@@ -11,3 +11,8 @@ DRY_RUN=1 RUN_ONCE=1 python run.py
 
 # live demo send + fixed clock
 DRY_RUN=0 python run.py
+
+
+
+#
+source .venv/bin/activate    
