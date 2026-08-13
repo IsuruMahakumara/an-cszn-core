@@ -15,15 +15,12 @@ import config
 
 class Client:
     def __init__(self) -> None:
-        # single demo venue for signal + execution
         self.base = config.FAPI_BASE.rstrip("/")
         self.mkt = config.MARKET_BASE.rstrip("/")
         self.secret = config.SECRET_KEY
         self.s = requests.Session()
         self.s.headers["X-MBX-APIKEY"] = config.API_KEY
-        # cache exchangeInfo filters
         self._filters: dict[str, dict[str, float]] | None = None
-        # hedgeMode from positionRisk dualSidePosition if detectable
         self.hedge_mode: bool | None = None
 
     def _req(
@@ -47,8 +44,6 @@ class Client:
         if r.status_code >= 400:
             raise RuntimeError(f"{method} {path} {r.status_code}: {r.text}")
         return r.json()
-
-    # ----- market (demo host) -----
 
     def klines(self, symbol: str, interval: str, limit: int) -> list:
         return self._req(
@@ -85,15 +80,11 @@ class Client:
             symbol, {"stepSize": 0.001, "minNotional": config.MIN_NOTIONAL}
         )
 
-    # ----- account -----
-
     def account(self) -> dict:
         return self._req("GET", "/fapi/v2/account", signed=True)
 
     def margin_balance(self) -> float:
-        """Account margin balance — source of collateral budget."""
         a = self.account()
-        # prefer totalMarginBalance; fall back to wallet
         for key in ("totalMarginBalance", "totalWalletBalance"):
             if key in a and a[key] is not None:
                 return float(a[key])
@@ -104,7 +95,6 @@ class Client:
         return float(a.get("availableBalance") or 0.0)
 
     def positions(self) -> dict[str, float]:
-        # symbol -> signed qty (one-way: net; hedge: net both sides)
         risk = self._req("GET", "/fapi/v2/positionRisk", signed=True)
         out: dict[str, float] = {}
         for p in risk:
@@ -112,18 +102,17 @@ class Client:
             if abs(amt) < 1e-12:
                 continue
             sym = p["symbol"]
-            # net if multiple sides returned
             out[sym] = out.get(sym, 0.0) + amt
         return out
 
-    def initial_margin_used(self) -> float:
+    def exchange_im_reported(self) -> float:
+        # often 0 on demo — prefer derived_im in strategy
         total = 0.0
         for p in self._req("GET", "/fapi/v2/positionRisk", signed=True):
             total += float(p.get("initialMargin") or 0.0)
         return total
 
     def detect_hedge_mode(self) -> bool:
-        # dualSidePosition endpoint
         try:
             d = self._req("GET", "/fapi/v1/positionSide/dual", signed=True)
             self.hedge_mode = bool(d.get("dualSidePosition"))
@@ -147,10 +136,33 @@ class Client:
             "type": "MARKET",
             "quantity": q,
         }
-        # hedge-mode hygiene: open with positionSide; flats use reduce-only path
         if self.hedge_mode:
-            # BUY opens/adds LONG; SELL opens/adds SHORT
             params["positionSide"] = "LONG" if side == "BUY" else "SHORT"
         elif reduce_only:
             params["reduceOnly"] = "true"
         return self._req("POST", "/fapi/v1/order", params, signed=True)
+
+    def income_since(self, start_ms: int) -> dict[str, float]:
+        """Sum income types since start_ms (reconcile fees / rpnl)."""
+        end = int(time.time() * 1000)
+        totals: dict[str, float] = {}
+        cursor = start_ms
+        while cursor < end:
+            batch = self._req(
+                "GET",
+                "/fapi/v1/income",
+                {"startTime": cursor, "endTime": end, "limit": 1000},
+                signed=True,
+            )
+            if not batch:
+                break
+            for x in batch:
+                t = x.get("incomeType") or "?"
+                totals[t] = totals.get(t, 0.0) + float(x.get("income") or 0.0)
+            last_t = int(batch[-1]["time"])
+            if last_t <= cursor:
+                break
+            cursor = last_t + 1
+            if len(batch) < 1000:
+                break
+        return totals
