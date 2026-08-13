@@ -1,4 +1,16 @@
-"""Fixed-clock residual rebalance loop on Binance demo futures."""
+"""
+COMPARTMENT: run
+ROLE:        wire the graph — clock loop only
+GRAPH (nodes → edges):
+  config ──knobs──► all
+  exchange ──closes,marks,balances,pos──► run
+  ops ──state,prev_w──► run
+  strategy.signal ──w,z,beta──► run
+  strategy.risk ──collat,gross,im──► run
+  strategy.orders ──order stubs──► run
+  run ──market orders──► exchange
+  run ──state,logs──► ops
+"""
 
 from __future__ import annotations
 
@@ -9,7 +21,7 @@ from datetime import datetime
 import pandas as pd
 
 import config
-from binance_futures import Client
+from exchange import Client
 from ops import (
     load_state,
     log_cycle,
@@ -27,17 +39,15 @@ from strategy import (
 
 
 def ts() -> str:
-    # local wall clock for stdout
     return datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 
 
 def log(*args, **kwargs) -> None:
-    # every console line is timestamped
     print(f"[{ts()}]", *args, **kwargs)
 
 
 def pull_closes(client: Client) -> tuple[pd.DataFrame, pd.Series]:
-    # close prices for the universe plus Bitcoin, aligned on open time
+    # IN: client → OUT: (asset closes, Bitcoin closes)
     book = {}
     for sym in config.UNIVERSE + [config.BENCHMARK]:
         raw = client.klines(sym, config.INTERVAL, config.KLINE_LIMIT)
@@ -50,25 +60,22 @@ def pull_closes(client: Client) -> tuple[pd.DataFrame, pd.Series]:
 
 
 def floor_qty(qty: float, step: float) -> float:
-    # never round up into a larger lot than sized
+    # IN: raw qty → OUT: lot-floored qty
     if step <= 0:
         return qty
     return math.floor(qty / step + 1e-12) * step
 
 
 def flatten_all(client: Client) -> list[dict]:
-    """Close every open position — used when the drawdown halt fires."""
+    # IN: open positions → OUT: close fills (or dry-run stubs)
     sent = []
     pos = client.positions()
     if not pos:
         log("flatten: already flat")
         return sent
     for sym, amt in pos.items():
-        # sell to close long; buy to close short
         side = "SELL" if amt > 0 else "BUY"
-        qty = abs(float(amt))
-        step = client.filters(sym)["stepSize"]
-        qty = floor_qty(qty, step)
+        qty = floor_qty(abs(float(amt)), client.filters(sym)["stepSize"])
         if qty <= 0:
             continue
         if config.DRY_RUN:
@@ -87,11 +94,14 @@ def flatten_all(client: Client) -> list[dict]:
 
 
 def once(client: Client, state: dict) -> dict:
+    """One clock tick through the concern graph."""
     cycle_start_ms = int(time.time() * 1000)
+
+    # ── node: market ── IN client → OUT assets, btc ────────────────
     assets, btc = pull_closes(client)
     log(f"bars={len(assets)} venue={config.MARKET_BASE} interval={config.INTERVAL}")
 
-    # prior weights feed the deadband
+    # ── node: signal ── IN assets,btc,prev_w → OUT w,z,beta ────────
     prev_w = weights_from_state(state)
     w, z, beta = target_weights(assets, btc, prev_w=prev_w)
     active = w[w.abs() > 1e-12]
@@ -104,13 +114,12 @@ def once(client: Client, state: dict) -> dict:
         float((w * beta.reindex(w.index).fillna(0)).sum()),
     )
 
+    # ── node: halt ── IN margin,state → OUT maybe flatten ───────────
     margin = client.margin_balance()
     avail = client.available_balance()
-    # update peak and maybe trip the kill switch
     state = update_peak_and_kill(state, margin)
     if state.get("halted"):
         log("HALTED:", state.get("halt_reason"))
-        # Simons: cut risk — flatten, do not leave orphans
         flat_sent = flatten_all(client)
         state["weights"] = {}
         log_cycle(
@@ -124,7 +133,7 @@ def once(client: Client, state: dict) -> dict:
         save_state(state)
         return state
 
-    # scarce risk budget from margin balance
+    # ── node: risk ── IN margin,pos → OUT collat,gross,im ───────────
     collat = collateral_from_margin(margin)
     gross = gross_notional_budget(margin, collat)
     pos = client.positions()
@@ -140,12 +149,13 @@ def once(client: Client, state: dict) -> dict:
         log("no risk budget — skip")
         return state
 
-    # zero weight on names we only need to exit
+    # ── node: orders ── IN w,px,pos,gross → OUT order stubs ─────────
     full_w = w.reindex(list(names)).fillna(0.0)
     mins = {s: client.filters(s)["minNotional"] for s in names}
     orders = rebalance_orders(full_w, px, pos, gross, mins)
     log(f"orders_n={len(orders)}", orders)
 
+    # ── node: execute ── IN orders → OUT fills ──────────────────────
     sent = []
     if config.DRY_RUN:
         log("DRY_RUN — no send")
@@ -166,7 +176,6 @@ def once(client: Client, state: dict) -> dict:
             reducing = abs(new_amt) < abs(cur_amt) - 1e-12
             add_im = notional / max(config.EXCHANGE_LEVERAGE, 1)
 
-            # never lock more initial margin than the collateral cap
             if not reducing and im_est + add_im > collat + 1e-6:
                 log(f"BLOCK IM {o['symbol']}: {im_est:.2f}+{add_im:.2f} > {collat:.2f}")
                 continue
@@ -198,7 +207,7 @@ def once(client: Client, state: dict) -> dict:
             except Exception as e:
                 log("FAIL", o["symbol"], e)
 
-    # persist intended targets for the next deadband
+    # ── node: persist ── IN results → OUT state + log ───────────────
     state["weights"] = {k: float(v) for k, v in w.items() if abs(float(v)) > 1e-12}
     state["last_cycle_ts"] = time.time()
     state["last_gross"] = gross
@@ -236,6 +245,7 @@ def once(client: Client, state: dict) -> dict:
 
 
 def main() -> None:
+    # ── node: boot ── IN env → OUT client, state ────────────────────
     if not config.API_KEY or not config.SECRET_KEY:
         raise SystemExit("missing API_KEY/SECRET_KEY in .env")
     if config.MARKET_BASE != config.FAPI_BASE:
@@ -259,6 +269,7 @@ def main() -> None:
         f"halted={state.get('halted')}",
     )
 
+    # ── node: clock ── loop once → sleep until wake stamp ───────────
     while True:
         try:
             state = once(client, state)
@@ -268,7 +279,6 @@ def main() -> None:
         if config.RUN_ONCE:
             return
         now = time.time()
-        # next fixed-clock boundary
         wake = (math.floor(now / config.REBALANCE_S) + 1) * config.REBALANCE_S
         wait = wake - now
         wake_str = datetime.fromtimestamp(wake).strftime("%Y-%m-%d-%H-%M-%S")

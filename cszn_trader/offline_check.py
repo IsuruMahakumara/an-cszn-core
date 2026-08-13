@@ -1,4 +1,9 @@
-"""Offline production-gate check (no API)."""
+"""
+COMPARTMENT: offline_check
+ROLE:        synthetic panel → strategy nodes (no exchange)
+IN:          none (builds fake prices)
+OUT:         printed z, weights, orders
+"""
 
 import numpy as np
 import pandas as pd
@@ -14,6 +19,7 @@ from strategy import (
 )
 import config
 
+# ── build fake panel ────────────────────────────────────────────────
 rng = np.random.default_rng(0)
 n = 120
 idx = np.arange(n)
@@ -30,17 +36,20 @@ for sym, b in true_b.items():
     cols[sym] = 100 + b * (btc - btc.iloc[0]) / 150 + noise
 
 closes = pd.DataFrame(cols, index=idx)
+
+# ── node: signal ────────────────────────────────────────────────────
 w, z, beta = target_weights(closes, btc, prev_w=None)
 print("z\n", z.sort_values(ascending=False))
 print("sparse\n", sparse_z(z))
 print("w\n", w[w.abs() > 1e-12].sort_values(ascending=False))
 print("port_beta", float((w * beta).sum()))
 
-# deadband should suppress tiny reshuffle
+# ── node: deadband smoke ────────────────────────────────────────────
 w2, _, _ = target_weights(closes, btc, prev_w=w)
-w2b = apply_weight_deadband(w2 * 0.99, w)  # tiny change → stick
+w2b = apply_weight_deadband(w2 * 0.99, w)
 print("deadband_keeps", (w2b - w).abs().max() < 1e-12 or True)
 
+# ── node: risk + orders ─────────────────────────────────────────────
 margin = 4166.0
 collat = collateral_from_margin(margin)
 gross = gross_notional_budget(margin, collat)

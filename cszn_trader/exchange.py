@@ -1,6 +1,8 @@
-"""Binance United States dollar margined demo Hypertext Transfer Protocol client.
-
-Market data and private calls use the same demo host by default.
+"""
+COMPARTMENT: exchange
+ROLE:        Binance demo Hypertext Transfer Protocol adapter
+IN:          config credentials + method args
+OUT:         candles, marks, balances, positions, order responses
 """
 
 from __future__ import annotations
@@ -18,17 +20,15 @@ import config
 
 class Client:
     def __init__(self) -> None:
-        # trading and account host
         self.base = config.FAPI_BASE.rstrip("/")
-        # public candles and marks (defaults to the same demo host)
         self.mkt = config.MARKET_BASE.rstrip("/")
         self.secret = config.SECRET_KEY
         self.s = requests.Session()
         self.s.headers["X-MBX-APIKEY"] = config.API_KEY
-        # cache exchange filters after first fetch
         self._filters: dict[str, dict[str, float]] | None = None
-        # None until detect_hedge_mode runs
         self.hedge_mode: bool | None = None
+
+    # ── transport ───────────────────────────────────────────────────
 
     def _req(
         self,
@@ -38,14 +38,13 @@ class Client:
         signed: bool = False,
         base: str | None = None,
     ) -> Any:
+        # IN: verb + path + params → OUT: parsed JSON (or raise)
         host = (base or self.base).rstrip("/")
         params = dict(params or {})
         if signed:
-            # exchange clock in milliseconds
             params["timestamp"] = int(time.time() * 1000)
             params["recvWindow"] = 5000
             q = urlencode(params)
-            # Hash-based Message Authentication Code signature
             params["signature"] = hmac.new(
                 self.secret.encode(), q.encode(), hashlib.sha256
             ).hexdigest()
@@ -54,8 +53,10 @@ class Client:
             raise RuntimeError(f"{method} {path} {r.status_code}: {r.text}")
         return r.json()
 
+    # ── market data ─────────────────────────────────────────────────
+
     def klines(self, symbol: str, interval: str, limit: int) -> list:
-        # open-time ordered candles; close is index four
+        # IN: symbol → OUT: candle rows
         return self._req(
             "GET",
             "/fapi/v1/klines",
@@ -64,7 +65,7 @@ class Client:
         )
 
     def mark(self, symbol: str) -> float:
-        # mark price for notional and margin estimates
+        # IN: symbol → OUT: mark price
         d = self._req(
             "GET", "/fapi/v1/premiumIndex", {"symbol": symbol}, base=self.mkt
         )
@@ -87,15 +88,18 @@ class Client:
         return out
 
     def filters(self, symbol: str) -> dict[str, float]:
+        # IN: symbol → OUT: {stepSize, minNotional}
         return self._load_filters().get(
             symbol, {"stepSize": 0.001, "minNotional": config.MIN_NOTIONAL}
         )
+
+    # ── account ─────────────────────────────────────────────────────
 
     def account(self) -> dict:
         return self._req("GET", "/fapi/v2/account", signed=True)
 
     def margin_balance(self) -> float:
-        # collateral budget is derived from this balance
+        # IN: — → OUT: margin balance
         a = self.account()
         for key in ("totalMarginBalance", "totalWalletBalance"):
             if key in a and a[key] is not None:
@@ -107,7 +111,7 @@ class Client:
         return float(a.get("availableBalance") or 0.0)
 
     def positions(self) -> dict[str, float]:
-        # net signed base quantity per symbol
+        # IN: — → OUT: {symbol: signed qty}
         risk = self._req("GET", "/fapi/v2/positionRisk", signed=True)
         out: dict[str, float] = {}
         for p in risk:
@@ -119,7 +123,6 @@ class Client:
         return out
 
     def exchange_im_reported(self) -> float:
-        # demo often returns zero; prefer derived_im in strategy
         total = 0.0
         for p in self._req("GET", "/fapi/v2/positionRisk", signed=True):
             total += float(p.get("initialMargin") or 0.0)
@@ -133,6 +136,8 @@ class Client:
             self.hedge_mode = False
         return bool(self.hedge_mode)
 
+    # ── orders ──────────────────────────────────────────────────────
+
     def set_leverage(self, symbol: str, lev: int) -> Any:
         return self._req(
             "POST",
@@ -142,7 +147,7 @@ class Client:
         )
 
     def market(self, symbol: str, side: str, qty: float, reduce_only: bool = False) -> Any:
-        # avoid scientific notation on the wire
+        # IN: symbol/side/qty → OUT: order response
         q = f"{qty:.8f}".rstrip("0").rstrip(".")
         params: dict[str, Any] = {
             "symbol": symbol,
@@ -150,16 +155,14 @@ class Client:
             "type": "MARKET",
             "quantity": q,
         }
-        # hedge accounts need an explicit position side
         if self.hedge_mode:
             params["positionSide"] = "LONG" if side == "BUY" else "SHORT"
         elif reduce_only:
-            # one-way mode: closing must not open the other side
             params["reduceOnly"] = "true"
         return self._req("POST", "/fapi/v1/order", params, signed=True)
 
     def income_since(self, start_ms: int) -> dict[str, float]:
-        """Sum income types since start_ms for fee and profit reconcile."""
+        # IN: start time → OUT: {incomeType: sum}
         end = int(time.time() * 1000)
         totals: dict[str, float] = {}
         cursor = start_ms

@@ -1,4 +1,9 @@
-"""Session state on disk and structured cycle logs."""
+"""
+COMPARTMENT: ops
+ROLE:        persistence + kill switch (no strategy math)
+IN:          state dict / margin
+OUT:         updated state, log file path
+"""
 
 from __future__ import annotations
 
@@ -13,7 +18,7 @@ import config
 
 
 def load_state(path: Path = config.STATE_PATH) -> dict[str, Any]:
-    # cold start: empty book, no peak, not halted
+    # IN: path → OUT: state dict
     if not path.exists():
         return {
             "weights": {},
@@ -27,7 +32,7 @@ def load_state(path: Path = config.STATE_PATH) -> dict[str, Any]:
 
 
 def save_state(state: dict[str, Any], path: Path = config.STATE_PATH) -> None:
-    # atomic replace so a crash mid-write does not corrupt state
+    # IN: state → OUT: disk file (atomic)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     with tmp.open("w") as f:
@@ -36,7 +41,7 @@ def save_state(state: dict[str, Any], path: Path = config.STATE_PATH) -> None:
 
 
 def weights_from_state(state: dict[str, Any]) -> pd.Series | None:
-    # prior target weights for the deadband
+    # IN: state → OUT: prior weight series or None
     w = state.get("weights") or {}
     if not w:
         return None
@@ -44,7 +49,7 @@ def weights_from_state(state: dict[str, Any]) -> pd.Series | None:
 
 
 def log_cycle(row: dict[str, Any], log_dir: Path = config.LOG_DIR) -> Path:
-    # one JavaScript Object Notation object per line, file per Coordinated Universal Time day
+    # IN: cycle row → OUT: append path
     log_dir.mkdir(parents=True, exist_ok=True)
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
     path = log_dir / f"cycles_{day}.jsonl"
@@ -58,14 +63,12 @@ def log_cycle(row: dict[str, Any], log_dir: Path = config.LOG_DIR) -> Path:
 def update_peak_and_kill(
     state: dict[str, Any], margin: float, max_dd: float = config.MAX_DRAWDOWN_FRAC
 ) -> dict[str, Any]:
-    """Raise peak margin; set halted when drawdown from peak clears the limit."""
+    # IN: state + margin → OUT: state (maybe halted)
     peak = state.get("peak_margin")
-    # ratchets peak upward with equity growth
     if peak is None or margin > float(peak):
         state["peak_margin"] = margin
         peak = margin
     peak = float(peak)
-    # hard stop on capital loss from peak — Simons: cut risk, do not negotiate
     if peak > 0 and (peak - margin) / peak >= max_dd:
         state["halted"] = True
         state["halt_reason"] = (
