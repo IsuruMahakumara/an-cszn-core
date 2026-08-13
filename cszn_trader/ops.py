@@ -1,9 +1,8 @@
-"""Session state + JSONL cycle logs (ops grade)."""
+"""Session state on disk and structured cycle logs."""
 
 from __future__ import annotations
 
 import json
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,6 +13,7 @@ import config
 
 
 def load_state(path: Path = config.STATE_PATH) -> dict[str, Any]:
+    # cold start: empty book, no peak, not halted
     if not path.exists():
         return {
             "weights": {},
@@ -27,6 +27,7 @@ def load_state(path: Path = config.STATE_PATH) -> dict[str, Any]:
 
 
 def save_state(state: dict[str, Any], path: Path = config.STATE_PATH) -> None:
+    # atomic replace so a crash mid-write does not corrupt state
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     with tmp.open("w") as f:
@@ -35,6 +36,7 @@ def save_state(state: dict[str, Any], path: Path = config.STATE_PATH) -> None:
 
 
 def weights_from_state(state: dict[str, Any]) -> pd.Series | None:
+    # prior target weights for the deadband
     w = state.get("weights") or {}
     if not w:
         return None
@@ -42,7 +44,7 @@ def weights_from_state(state: dict[str, Any]) -> pd.Series | None:
 
 
 def log_cycle(row: dict[str, Any], log_dir: Path = config.LOG_DIR) -> Path:
-    # one JSON object per line, file per UTC day
+    # one JavaScript Object Notation object per line, file per Coordinated Universal Time day
     log_dir.mkdir(parents=True, exist_ok=True)
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
     path = log_dir / f"cycles_{day}.jsonl"
@@ -56,12 +58,14 @@ def log_cycle(row: dict[str, Any], log_dir: Path = config.LOG_DIR) -> Path:
 def update_peak_and_kill(
     state: dict[str, Any], margin: float, max_dd: float = config.MAX_DRAWDOWN_FRAC
 ) -> dict[str, Any]:
-    """Track peak margin; halt if drawdown from peak exceeds max_dd."""
+    """Raise peak margin; set halted when drawdown from peak clears the limit."""
     peak = state.get("peak_margin")
+    # ratchets peak upward with equity growth
     if peak is None or margin > float(peak):
         state["peak_margin"] = margin
         peak = margin
     peak = float(peak)
+    # hard stop on capital loss from peak — Simons: cut risk, do not negotiate
     if peak > 0 and (peak - margin) / peak >= max_dd:
         state["halted"] = True
         state["halt_reason"] = (
