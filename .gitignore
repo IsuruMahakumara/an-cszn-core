@@ -12,4 +12,7 @@ python-api-tests/bar_signal_demo.py
 **/__pycache__/**
 *.pyc
 
+# Backtest close cache (refetch with BACKTEST_REFRESH=1).
+cszn_trader/data/*.csv
+
 

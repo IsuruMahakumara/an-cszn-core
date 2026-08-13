@@ -80,3 +80,15 @@ RUN_ONCE = os.getenv("RUN_ONCE", "0") in ("1", "true", "True")
 # ── persistence paths ───────────────────────────────────────────────
 STATE_PATH = Path(os.getenv("CSZN_STATE", str(Path(__file__).resolve().parent / "state.json")))
 LOG_DIR = Path(os.getenv("CSZN_LOG_DIR", str(_ROOT / "logs" / "cszn")))
+
+# ── backtest (prod tape, not demo). Frozen rules. No optimizer. ─────
+# Public klines only. Live orders stay on FAPI_BASE (demo).
+BACKTEST_FAPI = os.getenv("BACKTEST_FAPI_URL", "https://fapi.binance.com").rstrip("/")
+BACKTEST_DATA = Path(
+    os.getenv("CSZN_BACKTEST_DATA", str(Path(__file__).resolve().parent / "data" / "klines_1h.csv"))
+)
+# Starting paper margin (equity before any trade).
+BACKTEST_MARGIN = float(os.getenv("BACKTEST_MARGIN", "4000"))
+# How many calendar days of 1h closes to cache.
+BACKTEST_DAYS = int(os.getenv("BACKTEST_DAYS", "730"))
+BACKTEST_REFRESH = os.getenv("BACKTEST_REFRESH", "0") in ("1", "true", "True")

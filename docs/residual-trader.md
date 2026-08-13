@@ -13,7 +13,10 @@ flowchart LR
   ops["ops<br/>state + logs"]
   strategy["strategy<br/>signal / risk / orders"]
   run["run<br/>clock + wire"]
-  offline["offline_check<br/>no network"]
+  offline["offline_check<br/>smoke"]
+  data["data<br/>prod 1h cache"]
+  book["book<br/>paper inventory"]
+  backtest["backtest<br/>bar clock"]
 
   config -->|constants| exchange
   config -->|constants| strategy
@@ -27,6 +30,13 @@ flowchart LR
   run -->|updated state cycle log| ops
   config -->|constants| offline
   offline -->|synthetic closes| strategy
+  config -->|constants| data
+  config -->|constants| backtest
+  data -->|closes btc| backtest
+  backtest -->|slice prev_w| strategy
+  strategy -->|weights orders| backtest
+  backtest -->|stubs| book
+  book -->|qty cash| backtest
 ```
 
 ## Files
@@ -39,8 +49,11 @@ flowchart LR
 | `cszn_trader/ops.py` | Persistence and kill switch. | State dictionary and margin. | Updated state and log path. |
 | `cszn_trader/run.py` | Wires the graph on a clock. | Client and state. | Orders, logs, sleep until wake time. |
 | `cszn_trader/offline_check.py` | Offline smoke test. | Synthetic prices. | Printed ranks and orders. |
+| `cszn_trader/data.py` | Production 1h close cache. | Prod fapi or CSV. | Asset closes, Bitcoin closes. |
+| `cszn_trader/book.py` | Paper futures inventory. | Order stubs, next close. | Qty, entry, cash, fees. |
+| `cszn_trader/backtest.py` | Bar clock for proof of edge. | Panel and frozen knobs. | Scorecard after costs. |
 
-There is no `binance_futures.py`. The adapter lives in `exchange.py`.
+There is no `binance_futures.py`. The adapter lives in `exchange.py`. The backtester never calls it. See `docs/cszn-backtest.md` and `docs/cszn-backtest-constitution.md`.
 
 ## Strategy sub-nodes
 
