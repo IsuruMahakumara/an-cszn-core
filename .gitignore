@@ -6,13 +6,16 @@ logs/
 .cursor/debug*.log
 python-api-tests/bar_signal_demo.py
 .*
+*.csv
 
 # Bytecode: ignore the directory and every file inside it.
 **/__pycache__/
 **/__pycache__/**
 *.pyc
 
-# Backtest close cache (refetch with BACKTEST_REFRESH=1).
-cszn_trader/data/*.csv
+# Backtest close cache only (universe CSVs are tracked membership).
+cszn_trader/data/klines_1h.csv
+# Account income tape (append-only local ledger).
+cszn_trader/data/income_ledger.csv
 
 

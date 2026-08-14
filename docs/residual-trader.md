@@ -17,6 +17,7 @@ flowchart LR
   data["data<br/>prod 1h cache"]
   book["book<br/>paper inventory"]
   backtest["backtest<br/>bar clock"]
+  screen["refresh_universe<br/>offline screen"]
 
   config -->|constants| exchange
   config -->|constants| strategy
@@ -37,8 +38,9 @@ flowchart LR
   strategy -->|weights orders| backtest
   backtest -->|stubs| book
   book -->|qty cash| backtest
+  screen -->|universe.csv enabled| config
+  screen -->|prod/demo snapshots| disk["data/*.csv"]
 ```
-
 ## Files
 
 | File | Role | Input | Output |
@@ -52,8 +54,12 @@ flowchart LR
 | `cszn_trader/data.py` | Production 1h close cache. | Prod fapi or CSV. | Asset closes, Bitcoin closes. |
 | `cszn_trader/book.py` | Paper futures inventory. | Order stubs, next close. | Qty, entry, cash, fees. |
 | `cszn_trader/backtest.py` | Bar clock for proof of edge. | Panel and frozen knobs. | Scorecard after costs. |
+| `cszn_trader/refresh_universe.py` | Offline universe screen. | Prod + demo REST. | `universe_*.csv` snapshots; `--apply` → frozen list. |
+| `cszn_trader/sync_ledger.py` | Standalone income ledger. | Demo `/fapi/v1/income`. | Append-only `data/income_ledger.csv`. |
 
-There is no `binance_futures.py`. The adapter lives in `exchange.py`. The backtester never calls it. See `docs/cszn-backtest.md` and `docs/cszn-backtest-constitution.md`.
+There is no `binance_futures.py`. The adapter lives in `exchange.py`. The backtester never calls it. See `docs/cszn-backtest.md`, `docs/cszn-backtest-constitution.md`, and `docs/cszn-universe.md`.
+
+Universe membership is `cszn_trader/data/universe.csv` (`enabled=1`). The poll loop never rewrites it.
 
 ## Strategy sub-nodes
 
@@ -89,23 +95,25 @@ Beta hedge runs only inside names that pass the z-score floor, so weak names sta
 
 ## Run cycle stages
 
-`once` walks these labeled nodes in order: market, signal, halt, risk, orders, execute, persist. `main` polls on a short clock (default ten minutes). Adds fire only when z-score floor, weight deadband, and cost floor clear. Exits do not wait on those gates: a name is flattened when the signal zeros it, or when unrealized loss on that name reaches `STOP_PCT` of its notional. Underwater names are never increased. Cover orders are queued before new risk so initial-margin checks cannot skip a flatten. Each stub logs `exit_reason` as `signal_off`, `stop`, or `rebalance`. There is no take-profit.
+`once` is two modes. Every `POLL_S` (default 60s): margin, peak, halt, and per-name stop vs mark. Full candles + z-weights + rebalance run only when the UTC hour rolls (1h signal cannot change intra-hour). Adds still need z-score floor, deadband, and cost floor. Stops flatten immediately (`STOP_PCT` default 0.6% of that name's notional). Underwater names are never increased. No take-profit. Cycle logs always include `margin`, `peak_margin`, `dd_from_peak`, and `n_stop`.
 
 ```mermaid
 flowchart TD
-  A[Boot: config and state] --> B[Market: demo candles and marks]
+  A[Boot: config and state] --> P{UTC hour rolled?}
+  P -->|no: stop tick| E
+  P -->|yes: full rebalance| B[Market: demo candles]
   B --> C[Signal: beta strip and residual ranks]
   C --> D[Signal: sparse z-scores and dollar-neutral weights]
   D --> E{Drawdown halt?}
   E -->|yes| F[Flatten all positions then persist]
-  E -->|no|   G[Risk: collateral and gross caps]
-  G --> H{Exit or add edge?}
-  H -->|signal_off / stop| L
-  H -->|no add edge| I[Hold: log and persist]
+  E -->|no| G[Risk: collateral and peak log]
+  G --> H{Stop or add edge?}
+  H -->|stop / signal_off| L
+  H -->|no add edge| I[Hold: log peak and persist]
   H -->|add gates clear| J{Dry run?}
   J -->|yes| K[Log targets only]
   J -->|no| L[Execute closes first, then adds under IM cap]
-  I --> M[Poll sleep until next stamp]
+  I --> M[Poll sleep POLL_S]
   K --> M
   L --> M
   F --> M
@@ -113,7 +121,7 @@ flowchart TD
 
 ## Default knobs
 
-One-hour bars kept for signal stability. Beta window forty-eight. Residual lookback twelve. Z-score clip three and minimum one. Collateral five percent of margin with a two-hundred United States dollar ceiling. Leverage five. Gross at most twenty-five percent of margin. Weight deadband three percent. Minimum rebalance forty United States dollars on adds only. Per-name stop one point two percent of that name's notional, no take-profit. Poll every ten minutes (`POLL_SECONDS`, alias `REBALANCE_SECONDS`). Halt and flatten after three percent drawdown from peak margin. Dry run defaults on.
+One-hour bars kept for signal stability. Beta window forty-eight. Residual lookback twelve. Z-score clip three and minimum one. Collateral five percent of margin with a two-hundred United States dollar ceiling. Leverage five. Gross at most twenty-five percent of margin. Weight deadband three percent. Minimum rebalance forty United States dollars on adds only. Per-name stop **0.6%** of that name's notional, no take-profit. Poll every **sixty seconds** for stops (`POLL_SECONDS`; if an old env still sets `REBALANCE_SECONDS=600`, that wins as fallback — unset it). Full z-rebalance once per UTC hour. Halt and flatten after three percent drawdown from peak margin. Dry run defaults on.
 
 Traded universe is eighteen liquid perpetual names plus Bitcoin as benchmark only. Credentials load from the project-root `.env` file. Demo host defaults to `https://demo-fapi.binance.com` for both market data and orders.
 

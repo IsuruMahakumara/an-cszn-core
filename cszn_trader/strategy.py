@@ -4,7 +4,7 @@ ROLE:        pure math — no network
 NODES:
   signal  IN  closes, btc, prev_w     OUT  weights, z, beta
   risk    IN  margin                  OUT  collateral, gross
-  orders  IN  weights, prices, pos, entry, upnl, gross  OUT  order list
+  orders  IN  weights, prices, pos, entry, upnl, gross  OUT  order list / stop-only stubs
 """
 
 from __future__ import annotations
@@ -287,4 +287,50 @@ def rebalance_orders(
     # Closes first so IM from covers is free before any add.
     rank = {"stop": 0, "signal_off": 1, "rebalance": 2}
     orders.sort(key=lambda o: (0 if o["reducing"] else 1, rank.get(o["exit_reason"], 2)))
+    return orders
+
+
+def stop_flatten_orders(
+    price: pd.Series,
+    pos_qty: dict,
+    entry_px: dict | None = None,
+    upnl: dict | None = None,
+) -> list[dict]:
+    # IN: live book → OUT: flatten stubs for names past STOP_PCT only
+    entry_px = entry_px or {}
+    upnl = upnl or {}
+    orders = []
+    for sym, raw_qty in pos_qty.items():
+        if sym not in price.index:
+            continue
+        qty = float(raw_qty)
+        px = float(price[sym])
+        if abs(qty) < 1e-12 or px <= 0:
+            continue
+        entry = float(entry_px.get(sym, 0.0))
+        if sym in upnl:
+            pnl = float(upnl[sym])
+        elif entry > 0:
+            pnl = qty * (px - entry)
+        else:
+            continue
+        notion = abs(qty) * (entry if entry > 0 else px)
+        if notion < 1e-12 or pnl / notion > -config.STOP_PCT:
+            continue
+        # Flatten the whole name. Cost floor does not apply.
+        delta = -qty * px
+        side = "SELL" if qty > 0 else "BUY"
+        orders.append(
+            {
+                "symbol": sym,
+                "side": side,
+                "qty": abs(qty),
+                "px": px,
+                "delta_notional": delta,
+                "floor": 0.0,
+                "target_w": 0.0,
+                "exit_reason": "stop",
+                "reducing": True,
+            }
+        )
     return orders

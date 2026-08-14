@@ -10,6 +10,13 @@ python offline_check.py
 # agent/knob search: docs/cszn-backtest-constitution.md
 python backtest.py
 
+# universe screen (prod liquidity; demo gate). --apply rewrites frozen list.
+python refresh_universe.py
+# python refresh_universe.py --apply --top 30
+
+# append-only venue income ledger (realized / commission / funding)
+python sync_ledger.py
+
 # demo cycle (orders off by default)
 DRY_RUN=1 RUN_ONCE=1 python run.py
 

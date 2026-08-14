@@ -52,7 +52,7 @@ Live `exchange.py`, `run.py`, and `ops.py` are not in this graph.
 4. **Costs on.** Every fill pays `FEE_BPS`. Net pnl is after fees.
 5. **Scarce risk.** Same collateral and gross caps as live.
 6. **No account halt in the score.** Live flatten-on-drawdown is operations. Here max drawdown is reported so the fade is not censored.
-7. **No take-profit.** Winners ride until `|Z|` dies or the per-name stop hits.
+7. **No take-profit.** Winners ride until `|Z|` dies or the per-name stop hits. Live stop is 0.6% checked every 60s; this hourly backtest cannot simulate that fuse.
 
 ## Bar nodes
 

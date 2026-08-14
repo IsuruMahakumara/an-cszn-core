@@ -27,7 +27,7 @@ Companion: `docs/cszn-backtest.md` (how the bar clock works).
 4. One change per iteration. Diff ≤ ~20 lines or one named knob. Reject multi-file rewrites.
 5. Never weaken the fill model to improve PnL: no same-bar fill, no `FEE_BPS = 0`, no lookahead.
 6. Tape fixed. Same `cszn_trader/data/klines_1h.csv`. `BACKTEST_REFRESH` off unless explicitly refreshing history for everyone.
-7. Do not drop losing names from the universe mid-loop.
+7. Do not drop losing names from the universe mid-loop. Universe membership changes only via explicit `refresh_universe.py --apply`, then a new frozen tape.
 8. `offline_check.py` must pass after every code change.
 9. Log every run to JSONL: knobs, git hash / description, `net_pnl`, turnover, fees, `max_dd`, OOS window. Never overwrite prior rows.
 10. Stop condition: fixed trial budget (e.g. 20) or first **OOS** pass — not “until green.”

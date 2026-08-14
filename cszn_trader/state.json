@@ -1,13 +1,14 @@
 {
   "halt_reason": null,
   "halted": false,
-  "last_cycle_ts": 1786643786.158711,
+  "last_cycle_ts": 1786681920.434481,
+  "last_full_hour": 496300,
   "last_gross": 1000.0,
-  "last_margin": 4135.83679612,
+  "last_margin": 4133.37953573,
   "peak_margin": 4156.37228781,
   "weights": {
-    "BCHUSDT": -0.4980734593819745,
-    "TIAUSDT": 0.20812462450352937,
-    "WLDUSDT": 0.2938019161144962
+    "INJUSDT": -0.2326388079981595,
+    "NEARUSDT": -0.39579529675400094,
+    "OPUSDT": 0.37156589524783956
   }
 }

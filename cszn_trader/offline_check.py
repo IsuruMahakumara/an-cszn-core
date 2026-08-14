@@ -15,6 +15,7 @@ from strategy import (
     gross_notional_budget,
     rebalance_orders,
     sparse_z,
+    stop_flatten_orders,
     target_weights,
 )
 import config
@@ -113,3 +114,22 @@ mixed = rebalance_orders(
 reasons = [o["exit_reason"] for o in mixed]
 assert reasons[0] == "stop", mixed
 print("closes_first", reasons)
+
+# Fast-path stop helper: 0.6% of notional (qty 2 × entry 100 = 200).
+fast_stop = stop_flatten_orders(
+    px,
+    {"ETHUSDT": 2.0},
+    entry_px={"ETHUSDT": 100.0},
+    upnl={"ETHUSDT": -1.3},
+)
+assert fast_stop and fast_stop[0]["exit_reason"] == "stop", fast_stop
+print("stop_flatten", fast_stop[0]["side"], fast_stop[0]["qty"])
+# -0.5% is inside the fuse — no flatten.
+no_stop = stop_flatten_orders(
+    px,
+    {"ETHUSDT": 2.0},
+    entry_px={"ETHUSDT": 100.0},
+    upnl={"ETHUSDT": -1.0},
+)
+assert no_stop == [], no_stop
+print("stop_flatten_hold", no_stop)
