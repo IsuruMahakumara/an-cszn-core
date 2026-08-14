@@ -39,12 +39,8 @@ from strategy import (
 )
 
 
-def ts() -> str:
-    return datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-
-
-def log(*args, **kwargs) -> None:
-    print(f"[{ts()}]", *args, **kwargs)
+def log(*args) -> None:
+    print(f"[{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}]", *args)
 
 
 def pull_closes(client: Client) -> tuple[pd.DataFrame, pd.Series]:
@@ -70,13 +66,14 @@ def floor_qty(qty: float, step: float) -> float:
 def flatten_all(client: Client) -> list[dict]:
     # IN: open positions → OUT: close fills (or dry-run stubs)
     sent = []
-    pos = client.positions()
-    if not pos:
+    book = client.position_book()
+    if not book:
         log("flatten: already flat")
         return sent
-    for sym, amt in pos.items():
+    for sym, row in book.items():
+        amt = float(row["qty"])
         side = "SELL" if amt > 0 else "BUY"
-        qty = floor_qty(abs(float(amt)), client.filters(sym)["stepSize"])
+        qty = floor_qty(abs(amt), client.filters(sym)["stepSize"])
         if qty <= 0:
             continue
         if config.DRY_RUN:
@@ -94,16 +91,6 @@ def flatten_all(client: Client) -> list[dict]:
     return sent
 
 
-def log_peak(margin: float, peak: float, is_new_peak: bool) -> float:
-    # IN: live margin + stored peak → OUT: drawdown from peak
-    dd = (peak - margin) / peak if peak and peak > 0 else 0.0
-    if is_new_peak:
-        log(f"PEAK margin={margin:.2f}")
-    else:
-        log(f"margin={margin:.2f} peak={peak:.2f} dd_from_peak={dd:.2%}")
-    return dd
-
-
 def execute_orders(
     client: Client,
     orders: list[dict],
@@ -114,13 +101,12 @@ def execute_orders(
 ) -> list[dict]:
     # IN: stubs → OUT: sent fills; mutates pos
     sent: list[dict] = []
-    if not orders:
-        return sent
-    if config.DRY_RUN:
-        log("DRY_RUN — no send")
+    if not orders or config.DRY_RUN:
+        if orders and config.DRY_RUN:
+            log("DRY_RUN — no send")
         return sent
     im_est = im
-    # Stubs are already closes-first; IM from covers frees room for later adds.
+    # Stubs are already closes-first; covering a name frees IM for later adds.
     for o in orders:
         filt = client.filters(o["symbol"])
         step = filt["stepSize"]
@@ -131,7 +117,6 @@ def execute_orders(
             log("skip lot", o["symbol"], qty, notional)
             continue
         cur_amt = float(pos.get(o["symbol"], 0.0))
-        # Signed qty after this fill; used to tag reduce-only vs new risk.
         new_amt = cur_amt + qty if o["side"] == "BUY" else cur_amt - qty
         reducing = abs(new_amt) < abs(cur_amt) - 1e-12
         add_im = notional / max(config.EXCHANGE_LEVERAGE, 1)
@@ -174,20 +159,22 @@ def execute_orders(
 
 
 def once(client: Client, state: dict) -> dict:
-    """One clock tick: stop-only, or full 1h rebalance when the hour rolls."""
     cycle_start_ms = int(time.time() * 1000)
-    # Binance 1h bars align to UTC hours. z cannot change until this rolls.
+    # 1h z is constant inside a UTC hour; stop fuse still runs every poll.
     hour_id = int(time.time() // 3600)
     full = state.get("last_full_hour") != hour_id
 
-    # ── node: halt ── IN margin,state → OUT maybe flatten ───────────
-    margin = client.margin_balance()
-    avail = client.available_balance()
+    # ── node: halt
+    margin, avail = client.balances()
     prev_peak = state.get("peak_margin")
     state = update_peak_and_kill(state, margin)
     peak = float(state.get("peak_margin") or margin or 0.0)
     is_new_peak = prev_peak is None or margin > float(prev_peak) + 1e-12
-    dd = log_peak(margin, peak, is_new_peak)
+    dd = (peak - margin) / peak if peak > 0 else 0.0
+    if is_new_peak:
+        log(f"PEAK margin={margin:.2f}")
+    else:
+        log(f"margin={margin:.2f} peak={peak:.2f} dd_from_peak={dd:.2%}")
     if state.get("halted"):
         log("HALTED:", state.get("halt_reason"))
         flat_sent = flatten_all(client)
@@ -205,19 +192,18 @@ def once(client: Client, state: dict) -> dict:
         save_state(state)
         return state
 
+    # ── node: risk + book
     collat = collateral_from_margin(margin)
     gross = gross_notional_budget(margin, collat)
+    if collat <= 0 or gross <= 0:
+        log("no risk budget — skip")
+        return state
     book = client.position_book()
     pos = {s: v["qty"] for s, v in book.items()}
     entry_px = {s: v["entry"] for s, v in book.items()}
     upnl = {s: v["upnl"] for s, v in book.items()}
-    # Marks from the book — no extra premiumIndex on the stop tick.
     px = pd.Series({s: float(v["mark"] or 0.0) for s, v in book.items()})
     im = derived_im(pos, px) if pos else 0.0
-
-    if collat <= 0 or gross <= 0:
-        log("no risk budget — skip")
-        return state
 
     n_stop = 0
     orders: list[dict] = []
@@ -230,21 +216,17 @@ def once(client: Client, state: dict) -> dict:
     bars = 0
 
     if not full:
-        # Fast path: 1h z is stale until the hour rolls. Only cut losers.
+        # ── node: orders (stop tick only)
         orders = stop_flatten_orders(px, pos, entry_px, upnl)
         n_stop = len(orders)
-        if orders:
-            log(f"STOP tick n={n_stop}", orders)
-        else:
-            log("STOP tick — none")
+        log(f"STOP tick n={n_stop}", orders if orders else "none")
         sent = execute_orders(client, orders, pos, collat, avail, im)
     else:
-        # ── node: market + signal ── full kline pull, once per UTC hour
+        # ── node: market + signal (once per UTC hour)
         assets, btc = pull_closes(client)
         bars = len(assets)
         log(f"bars={bars} venue={config.MARKET_BASE} interval={config.INTERVAL} full=1")
-        prev_w = weights_from_state(state)
-        w, z, beta = target_weights(assets, btc, prev_w=prev_w)
+        w, z, beta = target_weights(assets, btc, prev_w=weights_from_state(state))
         active = w[w.abs() > 1e-12]
         log("z:\n", z.sort_values(ascending=False).to_string())
         log("w_active:\n", active.sort_values(ascending=False).to_string())
@@ -255,7 +237,6 @@ def once(client: Client, state: dict) -> dict:
             float((w * beta.reindex(w.index).fillna(0)).sum()),
         )
         names = set(w.index) | set(pos)
-        # Fill marks for names not already in the position book.
         for s in names:
             if s not in px.index or float(px.get(s, 0) or 0) <= 0:
                 px[s] = client.mark(s)
@@ -263,9 +244,10 @@ def once(client: Client, state: dict) -> dict:
             f"collat={collat:.2f} gross={gross:.2f} lev={config.EXCHANGE_LEVERAGE}x "
             f"im_derived={im:.2f} avail={avail:.2f}"
         )
-        full_w = w.reindex(list(names)).fillna(0.0)
         mins = {s: client.filters(s)["minNotional"] for s in names}
-        orders = rebalance_orders(full_w, px, pos, gross, mins, entry_px, upnl)
+        orders = rebalance_orders(
+            w.reindex(list(names)).fillna(0.0), px, pos, gross, mins, entry_px, upnl
+        )
         n_stop = sum(1 for o in orders if o.get("exit_reason") == "stop")
         if not orders:
             log("HOLD — no trade (z_min / deadband / cost floor / no-add-loser)")
@@ -275,18 +257,16 @@ def once(client: Client, state: dict) -> dict:
         state["weights"] = {k: float(v) for k, v in w.items() if abs(float(v)) > 1e-12}
         state["last_full_hour"] = hour_id
 
-    # ── node: persist ── IN results → OUT state + log ───────────────
+    # ── node: persist
     state["last_cycle_ts"] = time.time()
     state["last_gross"] = gross
     state["last_margin"] = margin
     state["peak_margin"] = peak
-
     income = {}
     try:
         income = client.income_since(cycle_start_ms - 1000)
     except Exception as e:
         log("income reconcile warn", e)
-
     log_cycle(
         {
             "event": "rebalance" if full else "stop_tick",
@@ -317,7 +297,7 @@ def once(client: Client, state: dict) -> dict:
 
 
 def main() -> None:
-    # ── node: boot ── IN env → OUT client, state ────────────────────
+    # ── node: boot
     if not config.API_KEY or not config.SECRET_KEY:
         raise SystemExit("missing API_KEY/SECRET_KEY in .env")
     if config.MARKET_BASE != config.FAPI_BASE:
@@ -342,7 +322,7 @@ def main() -> None:
         f"peak={state.get('peak_margin')}",
     )
 
-    # ── node: poll clock ── stop checks on POLL_S; z only on UTC hour
+    # ── node: poll clock
     while True:
         try:
             state = once(client, state)

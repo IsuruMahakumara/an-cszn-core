@@ -69,7 +69,7 @@ Universe membership is `cszn_trader/universe.csv` (`enabled=1`). The poll loop n
 |---|---|---|---|
 | signal | `rolling_beta`, `residuals`, `residual_signal`, `cross_sectional_z`, `sparse_z`, `dollar_neutral_weights`, `beta_neutralize`, `apply_weight_deadband`, `target_weights` | Asset closes, Bitcoin closes, prior weights | Unit-gross weights, z-scores, betas |
 | risk | `collateral_from_margin`, `gross_notional_budget`, `derived_im`, `cap_name_weights` | Margin, positions, marks | Collateral cap, gross budget, estimated initial margin |
-| orders | `cost_floor`, `rebalance_orders` | Weights, prices, positions, entry, unrealized, gross | Order stubs with `exit_reason`, closes first |
+| orders | `cost_floor`, `rebalance_orders`, `stop_flatten_orders` | Weights, prices, positions, entry, unrealized, gross | Order stubs with `exit_reason`, closes first |
 
 Beta hedge runs only inside names that pass the z-score floor, so weak names stay at zero weight and portfolio Bitcoin exposure stays near zero on the active set.
 
@@ -80,8 +80,8 @@ Beta hedge runs only inside names that pass the z-score floor, so weak names sta
 | `klines` | Symbol, interval, limit | Candle rows |
 | `mark` | Symbol | Mark price |
 | `filters` | Symbol | Lot step and minimum notional |
-| `margin_balance` / `available_balance` | None | Account balances |
-| `positions` / `position_book` | None | Signed quantity, or qty plus entry / mark / unrealized |
+| `balances` / `margin_balance` | None | Margin and available (one account snapshot) |
+| `position_book` | None | Qty, entry, mark, unrealized |
 | `set_leverage` / `market` | Symbol, side, quantity | Order response |
 | `income_since` | Start time | Sums by income type |
 | `detect_hedge_mode` | None | Hedge-mode flag |

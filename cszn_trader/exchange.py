@@ -28,8 +28,6 @@ class Client:
         self._filters: dict[str, dict[str, float]] | None = None
         self.hedge_mode: bool | None = None
 
-    # ── transport ───────────────────────────────────────────────────
-
     def _req(
         self,
         method: str,
@@ -38,7 +36,7 @@ class Client:
         signed: bool = False,
         base: str | None = None,
     ) -> Any:
-        # IN: verb + path + params → OUT: parsed JSON (or raise)
+        # IN: verb + path → OUT: JSON (or raise)
         host = (base or self.base).rstrip("/")
         params = dict(params or {})
         if signed:
@@ -53,10 +51,7 @@ class Client:
             raise RuntimeError(f"{method} {path} {r.status_code}: {r.text}")
         return r.json()
 
-    # ── market data ─────────────────────────────────────────────────
-
     def klines(self, symbol: str, interval: str, limit: int) -> list:
-        # IN: symbol → OUT: candle rows
         return self._req(
             "GET",
             "/fapi/v1/klines",
@@ -65,61 +60,51 @@ class Client:
         )
 
     def mark(self, symbol: str) -> float:
-        # IN: symbol → OUT: mark price
-        d = self._req(
-            "GET", "/fapi/v1/premiumIndex", {"symbol": symbol}, base=self.mkt
-        )
+        d = self._req("GET", "/fapi/v1/premiumIndex", {"symbol": symbol}, base=self.mkt)
         return float(d["markPrice"])
 
-    def _load_filters(self) -> dict[str, dict[str, float]]:
-        if self._filters is not None:
-            return self._filters
-        info = self._req("GET", "/fapi/v1/exchangeInfo", base=self.mkt)
-        out: dict[str, dict[str, float]] = {}
-        for s in info["symbols"]:
-            step, min_n = 0.001, config.MIN_NOTIONAL
-            for f in s["filters"]:
-                if f["filterType"] == "LOT_SIZE":
-                    step = float(f["stepSize"])
-                if f["filterType"] in ("MIN_NOTIONAL", "NOTIONAL"):
-                    min_n = float(f.get("notional") or f.get("minNotional") or min_n)
-            out[s["symbol"]] = {"stepSize": step, "minNotional": min_n}
-        self._filters = out
-        return out
-
     def filters(self, symbol: str) -> dict[str, float]:
-        # IN: symbol → OUT: {stepSize, minNotional}
-        return self._load_filters().get(
+        # IN: symbol → OUT: {stepSize, minNotional} (cached exchangeInfo)
+        if self._filters is None:
+            info = self._req("GET", "/fapi/v1/exchangeInfo", base=self.mkt)
+            out: dict[str, dict[str, float]] = {}
+            for s in info["symbols"]:
+                step, min_n = 0.001, config.MIN_NOTIONAL
+                for f in s["filters"]:
+                    if f["filterType"] == "LOT_SIZE":
+                        step = float(f["stepSize"])
+                    if f["filterType"] in ("MIN_NOTIONAL", "NOTIONAL"):
+                        min_n = float(f.get("notional") or f.get("minNotional") or min_n)
+                out[s["symbol"]] = {"stepSize": step, "minNotional": min_n}
+            self._filters = out
+        return self._filters.get(
             symbol, {"stepSize": 0.001, "minNotional": config.MIN_NOTIONAL}
         )
-
-    # ── account ─────────────────────────────────────────────────────
 
     def account(self) -> dict:
         return self._req("GET", "/fapi/v2/account", signed=True)
 
-    def margin_balance(self) -> float:
-        # IN: — → OUT: margin balance
+    def balances(self) -> tuple[float, float]:
+        # IN: — → OUT: (margin, available) from one snapshot
         a = self.account()
+        margin = 0.0
         for key in ("totalMarginBalance", "totalWalletBalance"):
-            if key in a and a[key] is not None:
-                return float(a[key])
-        return 0.0
+            if a.get(key) is not None:
+                margin = float(a[key])
+                break
+        return margin, float(a.get("availableBalance") or 0.0)
 
-    def available_balance(self) -> float:
-        a = self.account()
-        return float(a.get("availableBalance") or 0.0)
+    def margin_balance(self) -> float:
+        return self.balances()[0]
 
     def position_book(self) -> dict[str, dict[str, float]]:
         # IN: — → OUT: {symbol: qty, entry, mark, upnl}
-        risk = self._req("GET", "/fapi/v2/positionRisk", signed=True)
         out: dict[str, dict[str, float]] = {}
-        for p in risk:
+        for p in self._req("GET", "/fapi/v2/positionRisk", signed=True):
             amt = float(p.get("positionAmt", 0.0))
             if abs(amt) < 1e-12:
                 continue
             sym = p["symbol"]
-            # Venue fields used by stop / no-add-to-losers.
             row = {
                 "qty": amt,
                 "entry": float(p.get("entryPrice") or 0.0),
@@ -129,7 +114,7 @@ class Client:
             if sym not in out:
                 out[sym] = row
                 continue
-            # Hedge dual-side: net qty, sum pnl, size-weighted entry.
+            # Hedge dual-side: net qty, size-weighted entry, summed pnl.
             prev = out[sym]
             tot = prev["qty"] + amt
             notion = abs(prev["qty"]) * prev["entry"] + abs(amt) * row["entry"]
@@ -141,16 +126,6 @@ class Client:
             }
         return out
 
-    def positions(self) -> dict[str, float]:
-        # IN: — → OUT: {symbol: signed qty}
-        return {s: v["qty"] for s, v in self.position_book().items()}
-
-    def exchange_im_reported(self) -> float:
-        total = 0.0
-        for p in self._req("GET", "/fapi/v2/positionRisk", signed=True):
-            total += float(p.get("initialMargin") or 0.0)
-        return total
-
     def detect_hedge_mode(self) -> bool:
         try:
             d = self._req("GET", "/fapi/v1/positionSide/dual", signed=True)
@@ -158,8 +133,6 @@ class Client:
         except Exception:
             self.hedge_mode = False
         return bool(self.hedge_mode)
-
-    # ── orders ──────────────────────────────────────────────────────
 
     def set_leverage(self, symbol: str, lev: int) -> Any:
         return self._req(
@@ -170,7 +143,6 @@ class Client:
         )
 
     def market(self, symbol: str, side: str, qty: float, reduce_only: bool = False) -> Any:
-        # IN: symbol/side/qty → OUT: order response
         q = f"{qty:.8f}".rstrip("0").rstrip(".")
         params: dict[str, Any] = {
             "symbol": symbol,

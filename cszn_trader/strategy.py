@@ -56,7 +56,7 @@ def sparse_z(z: pd.Series, z_min: float = config.Z_MIN) -> pd.Series:
 
 
 def dollar_neutral_weights(z: pd.Series) -> pd.Series:
-    # IN: sparse z → OUT: dollar-neutral weights (sum |w| = 1)
+    # Long sleeve and short sleeve each get half of unit gross.
     long_raw = z.clip(lower=0.0)
     short_raw = z.clip(upper=0.0)
     long_sum = float(long_raw.sum())
@@ -79,22 +79,15 @@ def beta_neutralize(weights: pd.Series, betas: pd.Series) -> pd.Series:
 def apply_weight_deadband(
     new_w: pd.Series, old_w: pd.Series | None, band: float = config.WEIGHT_DEADBAND
 ) -> pd.Series:
-    # IN: new + prior weights → OUT: weights with tiny changes held
+    # Hold prior weight when the move is tiny. A new zero always wins (signal off).
     if old_w is None or band <= 0:
         return new_w
     old = old_w.reindex(new_w.index).fillna(0.0)
-    out = new_w.copy()
-    for s in out.index:
-        new = float(out[s])
-        # Signal off wins: never restore a name the sparse z already zeroed.
-        if abs(new) < 1e-12:
-            continue
-        if abs(new - float(old[s])) < band:
-            out[s] = old[s]
+    tiny_new = new_w.abs() < 1e-12
+    small_move = (new_w - old).abs() < band
+    out = new_w.where(tiny_new | ~small_move, old)
     g = float(out.abs().sum())
-    if g > 1e-12:
-        out = out / g
-    return out
+    return out / g if g > 1e-12 else out
 
 
 def target_weights(
@@ -110,13 +103,12 @@ def target_weights(
     r = aligned.drop(columns=["_mkt"])
 
     beta = rolling_beta(r, rm, config.BETA_WINDOW)
-    eps = residuals(r, rm, beta)
-    sig = residual_signal(eps, config.RESID_LOOKBACK)
-    z = cross_sectional_z(sig)
+    z = cross_sectional_z(residual_signal(residuals(r, rm, beta), config.RESID_LOOKBACK))
     z_trade = sparse_z(z)
     w = dollar_neutral_weights(z_trade)
     beta_latest = beta.iloc[-1].reindex(w.index)
 
+    # Beta hedge only on names that cleared the z floor.
     active = z_trade.abs() >= 1e-12
     w = w.where(active, 0.0)
     if active.any():
@@ -125,13 +117,8 @@ def target_weights(
         w.loc[wa.index] = wa
 
     g = float(w.abs().sum())
-    if g > 1e-12:
-        w = w / g
-    else:
-        w = pd.Series(0.0, index=z.index)
-
-    w = apply_weight_deadband(w, prev_w)
-    return w, z, beta_latest
+    w = w / g if g > 1e-12 else pd.Series(0.0, index=z.index)
+    return apply_weight_deadband(w, prev_w), z, beta_latest
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -162,9 +149,8 @@ def derived_im(pos_qty: dict, price: pd.Series, lev: int = config.EXCHANGE_LEVER
     # IN: positions + marks → OUT: estimated initial margin
     total = 0.0
     for sym, qty in pos_qty.items():
-        if sym not in price.index:
-            continue
-        total += abs(float(qty) * float(price[sym]))
+        if sym in price.index:
+            total += abs(float(qty) * float(price[sym]))
     return total / max(lev, 1)
 
 
@@ -172,9 +158,7 @@ def cap_name_weights(w: pd.Series, name_frac: float = config.NAME_FRAC) -> pd.Se
     # IN: weights → OUT: concentration-capped unit-gross weights
     capped = w.clip(lower=-name_frac, upper=name_frac)
     g = float(capped.abs().sum())
-    if g > 1e-12:
-        return capped / g
-    return capped
+    return capped / g if g > 1e-12 else capped
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -185,9 +169,8 @@ def cap_name_weights(w: pd.Series, name_frac: float = config.NAME_FRAC) -> pd.Se
 
 
 def cost_floor(delta: float, min_notional: float, gross_notional: float) -> float:
-    # IN: proposed delta → OUT: minimum |delta| worth trading
-    fee = abs(delta) * (config.FEE_BPS * 1e-4)
-    fee_floor = config.COST_MULT * fee
+    # IN: proposed delta → OUT: minimum |delta| worth trading as an add
+    fee_floor = abs(delta) * (config.FEE_BPS * 1e-4) * config.COST_MULT
     band_floor = config.WEIGHT_DEADBAND * gross_notional
     return max(
         min_notional,
@@ -196,6 +179,23 @@ def cost_floor(delta: float, min_notional: float, gross_notional: float) -> floa
         fee_floor,
         band_floor,
     )
+
+
+def _unrealized(sym: str, qty: float, px: float, entry_px: dict, upnl: dict) -> float | None:
+    # Venue upnl if present; else mark vs entry.
+    if sym in upnl:
+        return float(upnl[sym])
+    entry = float(entry_px.get(sym, 0.0) or 0.0)
+    if abs(qty) > 1e-12 and entry > 0:
+        return qty * (px - entry)
+    return None
+
+
+def _stop_hit(qty: float, px: float, entry: float, pnl: float | None) -> bool:
+    if abs(qty) < 1e-12 or pnl is None:
+        return False
+    notion = abs(qty) * (entry if entry > 0 else px)
+    return notion > 1e-12 and pnl / notion <= -config.STOP_PCT
 
 
 def rebalance_orders(
@@ -212,10 +212,10 @@ def rebalance_orders(
     entry_px = entry_px or {}
     upnl = upnl or {}
     tw = cap_name_weights(target_w)
-    # Open names missing from the weight index still need a flatten path.
     for s in pos_qty:
         if s not in tw.index:
             tw.loc[s] = 0.0
+
     orders = []
     for sym, weight in tw.items():
         if sym not in price.index:
@@ -224,39 +224,24 @@ def rebalance_orders(
         if px <= 0:
             continue
         qty = float(pos_qty.get(sym, 0.0))
-        # Signed notional at mark: long > 0, short < 0.
         cur = qty * px
         tgt_w = float(weight)
         entry = float(entry_px.get(sym, 0.0))
-        # Prefer venue unrealized; else mark vs entry.
-        if sym in upnl:
-            pnl = float(upnl[sym])
-        elif abs(qty) > 1e-12 and entry > 0:
-            pnl = qty * (px - entry)
-        else:
-            pnl = None
+        pnl = _unrealized(sym, qty, px, entry_px, upnl)
         reason = "rebalance"
 
-        # Per-name stop: flatten if unrealized ≤ −STOP_PCT of that name's notional.
-        if abs(qty) > 1e-12:
-            notion = abs(qty) * (entry if entry > 0 else px)
-            if notion > 1e-12 and pnl is not None and pnl / notion <= -config.STOP_PCT:
-                tgt_w = 0.0
-                reason = "stop"
-
-        # Signal off: target is flat while a position is still open.
-        if reason != "stop" and abs(tgt_w) < 1e-12 and abs(qty) > 1e-12:
+        if _stop_hit(qty, px, entry, pnl):
+            tgt_w = 0.0
+            reason = "stop"
+        elif abs(tgt_w) < 1e-12 and abs(qty) > 1e-12:
             reason = "signal_off"
 
         tgt = tgt_w * gross_notional
-        # No add to losers: never increase |qty|, and never flip through zero.
+        # Red names: never add size and never reverse through zero.
         if abs(qty) > 1e-12 and pnl is not None and pnl < 0 and reason != "stop":
             new_qty = tgt / px
-            # Opposite sign while red → flatten this cycle, do not reverse.
             if new_qty * qty < -1e-12:
-                tgt = 0.0
-                tgt_w = 0.0
-                reason = "rebalance"
+                tgt, tgt_w, reason = 0.0, 0.0, "rebalance"
             elif abs(new_qty) > abs(qty) + 1e-12:
                 continue
 
@@ -267,7 +252,6 @@ def rebalance_orders(
         floor = cost_floor(
             delta, min_notional_by_sym.get(sym, config.MIN_NOTIONAL), gross_notional
         )
-        # Cost floor only on adds / reshuffles, never on exits or reduces.
         if increasing and abs(delta) < floor:
             continue
         reducing = abs(tgt) < abs(cur) - 1e-12
@@ -284,7 +268,6 @@ def rebalance_orders(
                 "reducing": reducing,
             }
         )
-    # Closes first so IM from covers is free before any add.
     rank = {"stop": 0, "signal_off": 1, "rebalance": 2}
     orders.sort(key=lambda o: (0 if o["reducing"] else 1, rank.get(o["exit_reason"], 2)))
     return orders
@@ -305,28 +288,17 @@ def stop_flatten_orders(
             continue
         qty = float(raw_qty)
         px = float(price[sym])
-        if abs(qty) < 1e-12 or px <= 0:
-            continue
         entry = float(entry_px.get(sym, 0.0))
-        if sym in upnl:
-            pnl = float(upnl[sym])
-        elif entry > 0:
-            pnl = qty * (px - entry)
-        else:
+        pnl = _unrealized(sym, qty, px, entry_px, upnl)
+        if px <= 0 or not _stop_hit(qty, px, entry, pnl):
             continue
-        notion = abs(qty) * (entry if entry > 0 else px)
-        if notion < 1e-12 or pnl / notion > -config.STOP_PCT:
-            continue
-        # Flatten the whole name. Cost floor does not apply.
-        delta = -qty * px
-        side = "SELL" if qty > 0 else "BUY"
         orders.append(
             {
                 "symbol": sym,
-                "side": side,
+                "side": "SELL" if qty > 0 else "BUY",
                 "qty": abs(qty),
                 "px": px,
-                "delta_notional": delta,
+                "delta_notional": -qty * px,
                 "floor": 0.0,
                 "target_w": 0.0,
                 "exit_reason": "stop",
