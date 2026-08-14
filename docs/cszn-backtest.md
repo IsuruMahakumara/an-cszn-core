@@ -39,10 +39,10 @@ Live `exchange.py`, `run.py`, and `ops.py` are not in this graph.
 |---|---|---|---|
 | `config.py` | Same knobs as live, plus backtest paths. | Environment. | Constants. |
 | `strategy.py` | Unchanged fade math. | Close window, prior weights, book. | Weights, order stubs. |
-| `klines.py` | Fetch or read the 1h cache. | Prod fapi or CSV. | Asset closes, Bitcoin closes. |
-| `book.py` | Paper futures inventory. | Stubs, next-bar price. | Qty, entry, cash, fees, upnl. |
-| `backtest.py` | Bar clock and scorecard. | Panel + knobs. | Printed verdict. |
-| `offline_check.py` | Smoke tests. Not replaced. | Synthetic panel. | Asserts. |
+| `sim/klines.py` | Fetch or read the 1h cache. | Prod fapi or CSV. | Asset closes, Bitcoin closes. |
+| `sim/book.py` | Paper futures inventory. | Stubs, next-bar price. | Qty, entry, cash, fees, upnl. |
+| `sim/backtest.py` | Bar clock and scorecard. | Panel + knobs. | Printed verdict. |
+| `sim/offline_check.py` | Smoke tests. Not replaced. | Synthetic panel. | Asserts. |
 
 ## Simons rules this file enforces
 
@@ -69,7 +69,7 @@ Each `t` after warmup, before the last bar:
 
 ## Cache
 
-Path: `cszn_trader/data/klines_1h.csv` (gitignored).
+Path: `var/klines_1h.csv` (gitignored).
 
 First run downloads about `BACKTEST_DAYS` (default 730) of 1h closes for the frozen universe plus Bitcoin. Later runs read the file. Set `BACKTEST_REFRESH=1` to download again.
 
@@ -80,8 +80,8 @@ This is a cache, not a datalake: one CSV, wide closes, inner-joined timestamps.
 ```bash
 cd cszn_trader
 source .venv/bin/activate
-python backtest.py
-BACKTEST_REFRESH=1 python backtest.py
+python sim/backtest.py
+BACKTEST_REFRESH=1 python sim/backtest.py
 ```
 
 ## Scorecard
@@ -101,7 +101,7 @@ If `net_pnl` is not positive after costs on this frozen tape, there is no edge t
 | Constant | Default | Role |
 |---|---|---|
 | `BACKTEST_FAPI` | `https://fapi.binance.com` | Prod public klines. |
-| `BACKTEST_DATA` | `cszn_trader/data/klines_1h.csv` | Cache path. |
+| `BACKTEST_DATA` | `var/klines_1h.csv` | Cache path. |
 | `BACKTEST_MARGIN` | `4000` | Starting paper equity. |
 | `BACKTEST_DAYS` | `730` | Calendar days to cache. |
 | `BACKTEST_REFRESH` | off | Force re-download. |

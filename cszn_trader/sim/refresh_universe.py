@@ -2,9 +2,9 @@
 COMPARTMENT: refresh_universe
 ROLE:        screen snapshots — not the poll loop, not order filters
 IN:          prod + demo public (and optional signed) REST
-OUT:         data/universe_prod.csv
-             data/universe_demo.csv
-             data/universe.csv   (--apply only)
+OUT:         var/universe_prod.csv
+             var/universe_demo.csv
+             cszn_trader/universe.csv   (--apply only)
 
 Screen liquidity on PROD. Check demo only for "can we send this symbol?".
 minNotional / step for live orders still come from exchangeInfo at send time.
@@ -16,6 +16,7 @@ import argparse
 import csv
 import hashlib
 import hmac
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,12 +25,13 @@ from urllib.parse import urlencode
 
 import requests
 
+# Live package sits one directory up (config).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import config
 
-# ── paths (all under cszn_trader/data/) ─────────────────────────────
-_DATA = Path(__file__).resolve().parent / "data"
-PROD_CSV = _DATA / "universe_prod.csv"
-DEMO_CSV = _DATA / "universe_demo.csv"
+# Snapshots under var/; frozen list next to config.py.
+PROD_CSV = config.VAR_DIR / "universe_prod.csv"
+DEMO_CSV = config.VAR_DIR / "universe_demo.csv"
 FROZEN_CSV = config.UNIVERSE_CSV
 
 # Snapshot columns: filters are informational; runtime still uses exchangeInfo.

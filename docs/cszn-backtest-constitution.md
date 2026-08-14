@@ -1,6 +1,6 @@
 # CSZN backtest constitution
 
-Rules for any human or agent that changes the fade and runs `backtest.py`.
+Rules for any human or agent that changes the fade and runs `sim/backtest.py`.
 The goal is **proof of edge after costs**, not a green number.
 
 First frozen tape (2024-08-16 → 2026-08-13) showed no edge after costs.
@@ -26,9 +26,9 @@ Companion: `docs/cszn-backtest.md` (how the bar clock works).
 3. No new dependencies, no optimizer library, no research platform.
 4. One change per iteration. Diff ≤ ~20 lines or one named knob. Reject multi-file rewrites.
 5. Never weaken the fill model to improve PnL: no same-bar fill, no `FEE_BPS = 0`, no lookahead.
-6. Tape fixed. Same `cszn_trader/data/klines_1h.csv`. `BACKTEST_REFRESH` off unless explicitly refreshing history for everyone.
-7. Do not drop losing names from the universe mid-loop. Universe membership changes only via explicit `refresh_universe.py --apply`, then a new frozen tape.
-8. `offline_check.py` must pass after every code change.
+6. Tape fixed. Same `var/klines_1h.csv`. `BACKTEST_REFRESH` off unless explicitly refreshing history for everyone.
+7. Do not drop losing names from the universe mid-loop. Universe membership changes only via explicit `sim/refresh_universe.py --apply`, then a new frozen tape.
+8. `sim/offline_check.py` must pass after every code change.
 9. Log every run to JSONL: knobs, git hash / description, `net_pnl`, turnover, fees, `max_dd`, OOS window. Never overwrite prior rows.
 10. Stop condition: fixed trial budget (e.g. 20) or first **OOS** pass — not “until green.”
 
@@ -56,8 +56,8 @@ Companion: `docs/cszn-backtest.md` (how the bar clock works).
 ```text
 1. State hypothesis (one sentence)
 2. Change at most one knob or one gate
-3. Run offline_check
-4. Run backtest on frozen tape
+3. Run sim/offline_check
+4. Run sim/backtest on frozen tape
 5. Score OOS window only
 6. Append JSONL result
 7. If OOS fail → revert; do not stack fixes

@@ -5,9 +5,14 @@ IN:          none (builds fake prices)
 OUT:         printed z, weights, orders
 """
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
+# Live package sits one directory up (config / strategy).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from strategy import (
     apply_weight_deadband,
     collateral_from_margin,

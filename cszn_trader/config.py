@@ -24,10 +24,10 @@ MARKET_BASE = os.getenv("BINANCE_MARKET_URL", FAPI_BASE).rstrip("/")
 
 # ── names ───────────────────────────────────────────────────────────
 BENCHMARK = "BTCUSDT"
-# Frozen membership file. Refresh snapshots with refresh_universe.py;
-# rewrite this list only via refresh_universe.py --apply (never in the poll loop).
+# Frozen membership next to this file. Snapshots live under var/.
+# Rewrite only via sim/refresh_universe.py --apply (never in the poll loop).
 UNIVERSE_CSV = Path(
-    os.getenv("CSZN_UNIVERSE_CSV", str(Path(__file__).resolve().parent / "data" / "universe.csv"))
+    os.getenv("CSZN_UNIVERSE_CSV", str(Path(__file__).resolve().parent / "universe.csv"))
 )
 # Safety net if the CSV is missing or empty.
 _FALLBACK_UNIVERSE = [
@@ -105,15 +105,16 @@ DRY_RUN = os.getenv("DRY_RUN", "1") not in ("0", "false", "False")
 RUN_ONCE = os.getenv("RUN_ONCE", "0") in ("1", "true", "True")
 
 # ── persistence paths ───────────────────────────────────────────────
-STATE_PATH = Path(os.getenv("CSZN_STATE", str(Path(__file__).resolve().parent / "state.json")))
+# Regenerable caches / state (gitignored). Not source.
+VAR_DIR = Path(os.getenv("CSZN_VAR", str(_ROOT / "var")))
+STATE_PATH = Path(os.getenv("CSZN_STATE", str(VAR_DIR / "state.json")))
+LEDGER_PATH = Path(os.getenv("CSZN_LEDGER", str(VAR_DIR / "income_ledger.csv")))
 LOG_DIR = Path(os.getenv("CSZN_LOG_DIR", str(_ROOT / "logs" / "cszn")))
 
 # ── backtest (prod tape, not demo). Frozen rules. No optimizer. ─────
 # Public klines only. Live orders stay on FAPI_BASE (demo).
 BACKTEST_FAPI = os.getenv("BACKTEST_FAPI_URL", "https://fapi.binance.com").rstrip("/")
-BACKTEST_DATA = Path(
-    os.getenv("CSZN_BACKTEST_DATA", str(Path(__file__).resolve().parent / "data" / "klines_1h.csv"))
-)
+BACKTEST_DATA = Path(os.getenv("CSZN_BACKTEST_DATA", str(VAR_DIR / "klines_1h.csv")))
 # Starting paper margin (equity before any trade).
 BACKTEST_MARGIN = float(os.getenv("BACKTEST_MARGIN", "4000"))
 # How many calendar days of 1h closes to cache.

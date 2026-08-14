@@ -13,10 +13,14 @@ Account-level halt is live ops, not alpha — max drawdown is reported, not cens
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pandas as pd
 
+# Live package sits one directory up (config / strategy).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import config
 from book import apply_fills, empty, equity, upnl_map
 from klines import load_panel

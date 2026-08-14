@@ -2,7 +2,7 @@
 COMPARTMENT: sync_ledger
 ROLE:        standalone income tape — not the poll loop, not strategy
 IN:          demo signed GET /fapi/v1/income + account
-OUT:         append-only data/income_ledger.csv + printed totals
+OUT:         append-only var/income_ledger.csv + printed totals
 
 Rerun: only new venue rows are appended (tran_id / fingerprint).
 Existing CSV lines are never rewritten or deleted.
@@ -11,16 +11,19 @@ Existing CSV lines are never rewritten or deleted.
 from __future__ import annotations
 
 import csv
+import sys
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Live package sits one directory up (config / exchange).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import config
 from exchange import Client
 
 # Frozen path. Gitignored — account P&L stays local.
-LEDGER = Path(__file__).resolve().parent / "data" / "income_ledger.csv"
+LEDGER = config.LEDGER_PATH
 # First run pulls this many days; later runs start at last csv time.
 LOOKBACK_DAYS = 30
 # Venue types we keep. Other income types are ignored.

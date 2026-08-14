@@ -2,19 +2,19 @@
 
 Frozen trade list + offline liquidity screen. Not part of the poll loop.
 
-## Files (all under `cszn_trader/`)
+## Files
 
 | Path | Role |
 |---|---|
-| `data/universe.csv` | **Frozen** membership. `config.UNIVERSE` = rows with `enabled=1`. |
-| `data/universe_prod.csv` | Prod screen snapshot (liquidity + filters info). |
-| `data/universe_demo.csv` | Demo listing snapshot (tradeable on sandbox?). |
-| `refresh_universe.py` | One script → two snapshots; `--apply` rewrites frozen list. |
-| `config.py` | Reads `universe.csv` only. Does not call the screen. |
+| `cszn_trader/universe.csv` | **Frozen** membership. `config.UNIVERSE` = rows with `enabled=1`. Tracked. |
+| `var/universe_prod.csv` | Prod screen snapshot (gitignored). |
+| `var/universe_demo.csv` | Demo listing snapshot (gitignored). |
+| `cszn_trader/sim/refresh_universe.py` | Two snapshots; `--apply` rewrites frozen list. |
+| `cszn_trader/config.py` | Reads `universe.csv` only. Does not call the screen. |
 
 `minNotional` / `stepSize` on the CSV are **informational**. Live and demo orders still size from `exchangeInfo` in `exchange.py`.
 
-`data/klines_1h.csv` stays the backtest tape cache (gitignored). Universe CSVs are tracked.
+`var/klines_1h.csv` is the backtest tape cache (gitignored).
 
 ## Rules (aligned with constitution)
 
@@ -31,14 +31,14 @@ cd cszn_trader
 source .venv/bin/activate
 
 # snapshots only (safe)
-python refresh_universe.py
+python sim/refresh_universe.py
 
 # rewrite frozen membership (prod∩demo top-N)
-python refresh_universe.py --apply --top 30
-# or: UNIVERSE_TOP_N=30 python refresh_universe.py --apply
+python sim/refresh_universe.py --apply --top 30
+# or: UNIVERSE_TOP_N=30 python sim/refresh_universe.py --apply
 
 # then, if membership changed:
-BACKTEST_REFRESH=1 python backtest.py
+BACKTEST_REFRESH=1 python sim/backtest.py
 ```
 
 ## Frozen CSV columns

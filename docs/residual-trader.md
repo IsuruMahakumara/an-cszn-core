@@ -41,7 +41,7 @@ flowchart LR
   backtest -->|stubs| book
   book -->|qty cash| backtest
   screen -->|universe.csv enabled| config
-  screen -->|prod/demo snapshots| disk["data/*.csv"]
+  screen -->|prod/demo snapshots| disk["var"]
 ```
 ## Files
 
@@ -52,16 +52,16 @@ flowchart LR
 | `cszn_trader/exchange.py` | Demo Hypertext Transfer Protocol client. | Credentials and method arguments. | Candles, marks, balances, fills. |
 | `cszn_trader/ops.py` | Persistence and kill switch. | State dictionary and margin. | Updated state and log path. |
 | `cszn_trader/run.py` | Wires the graph on a clock. | Client and state. | Orders, logs, sleep until wake time. |
-| `cszn_trader/offline_check.py` | Offline smoke test. | Synthetic prices. | Printed ranks and orders. |
-| `cszn_trader/klines.py` | Production 1h close cache. | Prod fapi or CSV. | Asset closes, Bitcoin closes. |
-| `cszn_trader/book.py` | Paper futures inventory. | Order stubs, next close. | Qty, entry, cash, fees. |
-| `cszn_trader/backtest.py` | Bar clock for proof of edge. | Panel and frozen knobs. | Scorecard after costs. |
-| `cszn_trader/refresh_universe.py` | Offline universe screen. | Prod + demo REST. | `universe_*.csv` snapshots; `--apply` → frozen list. |
-| `cszn_trader/sync_ledger.py` | Standalone income ledger. | Demo `/fapi/v1/income`. | Append-only `data/income_ledger.csv`. |
+| `cszn_trader/sim/offline_check.py` | Offline smoke test. | Synthetic prices. | Printed ranks and orders. |
+| `cszn_trader/sim/klines.py` | Production 1h close cache. | Prod fapi or CSV. | Asset closes, Bitcoin closes. |
+| `cszn_trader/sim/book.py` | Paper futures inventory. | Order stubs, next close. | Qty, entry, cash, fees. |
+| `cszn_trader/sim/backtest.py` | Bar clock for proof of edge. | Panel and frozen knobs. | Scorecard after costs. |
+| `cszn_trader/sim/refresh_universe.py` | Offline universe screen. | Prod + demo REST. | `var/universe_*.csv`; `--apply` → frozen list. |
+| `cszn_trader/tools/sync_ledger.py` | Standalone income ledger. | Demo `/fapi/v1/income`. | Append-only `var/income_ledger.csv`. |
 
 There is no `binance_futures.py`. The adapter lives in `exchange.py`. The backtester never calls it.
 
-Universe membership is `cszn_trader/data/universe.csv` (`enabled=1`). The poll loop never rewrites it.
+Universe membership is `cszn_trader/universe.csv` (`enabled=1`). The poll loop never rewrites it. Runtime caches live in `var/` (`state.json`, klines, ledger, screen snapshots).
 
 ## Strategy sub-nodes
 
@@ -123,8 +123,8 @@ flowchart TD
 
 ## Default knobs
 
-Knobs live in `cszn_trader/config.py`. Credentials from project-root `.env`. Demo host `https://demo-fapi.binance.com`. Universe: `cszn_trader/data/universe.csv` (`enabled=1`).
+Knobs live in `cszn_trader/config.py`. Credentials from project-root `.env`. Demo host `https://demo-fapi.binance.com`. Universe: `cszn_trader/universe.csv` (`enabled=1`).
 
 ## Limits
 
-There is no automated proof that the residual signal earns money after costs. Demo candle history is short for stable beta. Universe liquidity is not re-screened every cycle. Clearing a halt requires editing or deleting `state.json`.
+There is no automated proof that the residual signal earns money after costs. Demo candle history is short for stable beta. Universe liquidity is not re-screened every cycle. Clearing a halt requires editing or deleting `var/state.json`.

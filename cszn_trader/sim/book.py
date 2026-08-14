@@ -9,8 +9,13 @@ Futures: cash does not pay the notional. Cash moves by fee and realized pnl.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pandas as pd
 
+# Live package sits one directory up (config).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import config
 
 

@@ -9,11 +9,15 @@ Simons: one tape, frozen names. Refetch only when BACKTEST_REFRESH=1.
 
 from __future__ import annotations
 
+import sys
 import time
+from pathlib import Path
 
 import pandas as pd
 import requests
 
+# Live package sits one directory up (config / strategy).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import config
 
 # Binance kline cap per call. Paginate with startTime; never pull demo-fapi.
