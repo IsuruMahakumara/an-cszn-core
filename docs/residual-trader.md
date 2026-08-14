@@ -1,6 +1,8 @@
 # Residual futures trader
 
-This package trades a dollar-neutral residual book on Binance United States dollar margined demo futures. Bitcoin is the common factor only and is never a target name. The loop is mechanical: fixed clock, fixed rules, and scarce risk.
+Repo: **an-cszn-core**. Dollar-neutral residual fade vs Bitcoin on Binance USDT-M demo futures. Bitcoin is the factor only. Fixed clock, fixed rules, scarce risk.
+
+Index: [backtest](cszn-backtest.md) · [constitution](cszn-backtest-constitution.md) · [universe](cszn-universe.md) · [ledger](cszn-ledger.md) · [CSZN](CSZN.md)
 
 ## Concern graph
 
@@ -14,7 +16,7 @@ flowchart LR
   strategy["strategy<br/>signal / risk / orders"]
   run["run<br/>clock + wire"]
   offline["offline_check<br/>smoke"]
-  data["data<br/>prod 1h cache"]
+  klines["klines<br/>prod 1h cache"]
   book["book<br/>paper inventory"]
   backtest["backtest<br/>bar clock"]
   screen["refresh_universe<br/>offline screen"]
@@ -31,9 +33,9 @@ flowchart LR
   run -->|updated state cycle log| ops
   config -->|constants| offline
   offline -->|synthetic closes| strategy
-  config -->|constants| data
+  config -->|constants| klines
   config -->|constants| backtest
-  data -->|closes btc| backtest
+  klines -->|closes btc| backtest
   backtest -->|slice prev_w| strategy
   strategy -->|weights orders| backtest
   backtest -->|stubs| book
@@ -51,13 +53,13 @@ flowchart LR
 | `cszn_trader/ops.py` | Persistence and kill switch. | State dictionary and margin. | Updated state and log path. |
 | `cszn_trader/run.py` | Wires the graph on a clock. | Client and state. | Orders, logs, sleep until wake time. |
 | `cszn_trader/offline_check.py` | Offline smoke test. | Synthetic prices. | Printed ranks and orders. |
-| `cszn_trader/data.py` | Production 1h close cache. | Prod fapi or CSV. | Asset closes, Bitcoin closes. |
+| `cszn_trader/klines.py` | Production 1h close cache. | Prod fapi or CSV. | Asset closes, Bitcoin closes. |
 | `cszn_trader/book.py` | Paper futures inventory. | Order stubs, next close. | Qty, entry, cash, fees. |
 | `cszn_trader/backtest.py` | Bar clock for proof of edge. | Panel and frozen knobs. | Scorecard after costs. |
 | `cszn_trader/refresh_universe.py` | Offline universe screen. | Prod + demo REST. | `universe_*.csv` snapshots; `--apply` → frozen list. |
 | `cszn_trader/sync_ledger.py` | Standalone income ledger. | Demo `/fapi/v1/income`. | Append-only `data/income_ledger.csv`. |
 
-There is no `binance_futures.py`. The adapter lives in `exchange.py`. The backtester never calls it. See `docs/cszn-backtest.md`, `docs/cszn-backtest-constitution.md`, and `docs/cszn-universe.md`.
+There is no `binance_futures.py`. The adapter lives in `exchange.py`. The backtester never calls it.
 
 Universe membership is `cszn_trader/data/universe.csv` (`enabled=1`). The poll loop never rewrites it.
 
@@ -121,9 +123,7 @@ flowchart TD
 
 ## Default knobs
 
-One-hour bars kept for signal stability. Beta window forty-eight. Residual lookback twelve. Z-score clip three and minimum one. Collateral five percent of margin with a two-hundred United States dollar ceiling. Leverage five. Gross at most twenty-five percent of margin. Weight deadband three percent. Minimum rebalance forty United States dollars on adds only. Per-name stop **0.6%** of that name's notional, no take-profit. Poll every **sixty seconds** for stops (`POLL_SECONDS`; if an old env still sets `REBALANCE_SECONDS=600`, that wins as fallback — unset it). Full z-rebalance once per UTC hour. Halt and flatten after three percent drawdown from peak margin. Dry run defaults on.
-
-Traded universe is eighteen liquid perpetual names plus Bitcoin as benchmark only. Credentials load from the project-root `.env` file. Demo host defaults to `https://demo-fapi.binance.com` for both market data and orders.
+Knobs live in `cszn_trader/config.py`. Credentials from project-root `.env`. Demo host `https://demo-fapi.binance.com`. Universe: `cszn_trader/data/universe.csv` (`enabled=1`).
 
 ## Limits
 

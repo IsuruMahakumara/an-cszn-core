@@ -2,7 +2,7 @@
 COMPARTMENT: backtest
 ROLE:        bar clock — proof of the frozen CSZN fade after costs
 GRAPH:
-  data ──closes,btc──► backtest
+  klines ──closes,btc──► backtest
   strategy ──w,z,orders──► backtest
   book ──qty,entry,cash──► backtest
   backtest ──scorecard──► stdout
@@ -19,7 +19,7 @@ import pandas as pd
 
 import config
 from book import apply_fills, empty, equity, upnl_map
-from data import load_panel
+from klines import load_panel
 from strategy import (
     collateral_from_margin,
     gross_notional_budget,

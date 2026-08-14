@@ -11,17 +11,17 @@ Any human or agent that changes knobs and re-runs this clock must follow **`docs
 ```mermaid
 flowchart LR
   config["config<br/>knobs"]
-  data["data<br/>prod 1h cache"]
+  klines["klines<br/>prod 1h cache"]
   strategy["strategy<br/>signal / risk / orders"]
   book["book<br/>paper inventory"]
   backtest["backtest<br/>bar clock"]
   offline["offline_check<br/>smoke"]
 
-  config -->|frozen constants| data
+  config -->|frozen constants| klines
   config -->|frozen constants| strategy
   config -->|frozen constants| book
   config -->|frozen constants| backtest
-  data -->|closes btc| backtest
+  klines -->|closes btc| backtest
   backtest -->|lookback slice prev_w| strategy
   strategy -->|weights orders| backtest
   backtest -->|stubs next close| book
@@ -39,7 +39,7 @@ Live `exchange.py`, `run.py`, and `ops.py` are not in this graph.
 |---|---|---|---|
 | `config.py` | Same knobs as live, plus backtest paths. | Environment. | Constants. |
 | `strategy.py` | Unchanged fade math. | Close window, prior weights, book. | Weights, order stubs. |
-| `data.py` | Fetch or read the 1h cache. | Prod fapi or CSV. | Asset closes, Bitcoin closes. |
+| `klines.py` | Fetch or read the 1h cache. | Prod fapi or CSV. | Asset closes, Bitcoin closes. |
 | `book.py` | Paper futures inventory. | Stubs, next-bar price. | Qty, entry, cash, fees, upnl. |
 | `backtest.py` | Bar clock and scorecard. | Panel + knobs. | Printed verdict. |
 | `offline_check.py` | Smoke tests. Not replaced. | Synthetic panel. | Asserts. |

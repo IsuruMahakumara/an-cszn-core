@@ -4,18 +4,16 @@ build/
 logs/
 .env
 .cursor/debug*.log
-python-api-tests/bar_signal_demo.py
 .*
-*.csv
 
-# Bytecode: ignore the directory and every file inside it.
+# Bytecode
 **/__pycache__/
 **/__pycache__/**
 *.pyc
 
-# Backtest close cache only (universe CSVs are tracked membership).
+# Runtime / regenerable (frozen membership universe.csv is tracked)
+cszn_trader/state.json
 cszn_trader/data/klines_1h.csv
-# Account income tape (append-only local ledger).
 cszn_trader/data/income_ledger.csv
-
-
+cszn_trader/data/universe_prod.csv
+cszn_trader/data/universe_demo.csv

@@ -1,3 +1,7 @@
+# an-cszn-core
+
+Cross-sectional residual fade vs Bitcoin on Binance USDT-M demo futures. See `docs/residual-trader.md`.
+
 cd cszn_trader
 python3 -m venv .venv
 source .venv/bin/activate
@@ -22,8 +26,3 @@ DRY_RUN=1 RUN_ONCE=1 python run.py
 
 # live demo send + fixed clock
 DRY_RUN=0 python run.py
-
-
-
-#
-source .venv/bin/activate    
