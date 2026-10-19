@@ -70,13 +70,14 @@ def _load_universe(path: Path) -> list[str]:
 
 UNIVERSE = _load_universe(UNIVERSE_CSV)
 
-# ── signal windows ──────────────────────────────────────────────────
-INTERVAL = os.getenv("KLINE_INTERVAL", "1h")
-BETA_WINDOW = int(os.getenv("BETA_WINDOW", "48"))
-RESID_LOOKBACK = int(os.getenv("RESID_LOOKBACK", "12"))
+# ── signal windows (exp/cszn-1m: 1m refresh of a slow residual) ────
+# Beta 720×1m = 12h. Residual sum 60×1m = 1h. Not the old 48/12 hour-bars.
+INTERVAL = os.getenv("KLINE_INTERVAL", "1m")
+BETA_WINDOW = int(os.getenv("BETA_WINDOW", "720"))
+RESID_LOOKBACK = int(os.getenv("RESID_LOOKBACK", "60"))
 KLINE_LIMIT = min(1500, BETA_WINDOW + RESID_LOOKBACK + 50)
 Z_CLIP = float(os.getenv("Z_CLIP", "3.0"))
-Z_MIN = float(os.getenv("Z_MIN", "1.0"))
+Z_MIN = float(os.getenv("Z_MIN", "0.5"))
 
 # ── risk budget ─────────────────────────────────────────────────────
 COLLATERAL_FRAC = float(os.getenv("COLLATERAL_FRAC", "0.05"))
@@ -92,11 +93,11 @@ WEIGHT_DEADBAND = float(os.getenv("WEIGHT_DEADBAND", "0.03"))
 MIN_REBALANCE_USDT = float(os.getenv("MIN_REBALANCE_USDT", "40"))
 MIN_NOTIONAL = float(os.getenv("MIN_NOTIONAL", "5"))
 # Per-name hard stop as a fraction of that name's notional. No take-profit.
-# 0.6% checked every POLL_S — loser fuse is threshold × poll, not the 1h bar.
+# 0.6% checked every POLL_S — loser fuse is threshold × poll, not the signal bar.
 STOP_PCT = float(os.getenv("STOP_PCT", "0.006"))
 
 # ── poll clock + halt ───────────────────────────────────────────────
-# Watch often (default 60s) for stops. Full z-rebalance only when the 1h bar rolls.
+# Watch often (default 60s) for stops. Full z when the 1m bar id rolls (same as poll).
 # Adds still wait for Z_MIN + deadband + cost floor. No take-profit.
 # REBALANCE_SECONDS kept as alias for older env files.
 POLL_S = int(os.getenv("POLL_SECONDS", os.getenv("REBALANCE_SECONDS", "60")))
@@ -114,11 +115,11 @@ LOG_DIR = Path(os.getenv("CSZN_LOG_DIR", str(_ROOT / "logs" / "cszn")))
 # ── backtest (prod tape, not demo). Frozen rules. No optimizer. ─────
 # Public klines only. Live orders stay on FAPI_BASE (demo).
 BACKTEST_FAPI = os.getenv("BACKTEST_FAPI_URL", "https://fapi.binance.com").rstrip("/")
-BACKTEST_DATA = Path(os.getenv("CSZN_BACKTEST_DATA", str(VAR_DIR / "klines_1h.csv")))
+BACKTEST_DATA = Path(os.getenv("CSZN_BACKTEST_DATA", str(VAR_DIR / "klines_1m.csv")))
 # Starting paper margin (equity before any trade).
 BACKTEST_MARGIN = float(os.getenv("BACKTEST_MARGIN", "4000"))
-# How many calendar days of 1h closes to cache.
-BACKTEST_DAYS = int(os.getenv("BACKTEST_DAYS", "730"))
+# Calendar days of 1m closes to cache (14d ≈ 20k bars/name; not 730).
+BACKTEST_DAYS = int(os.getenv("BACKTEST_DAYS", "14"))
 BACKTEST_REFRESH = os.getenv("BACKTEST_REFRESH", "0") in ("1", "true", "True")
 # How many prod∩demo names --apply enables into universe.csv.
 UNIVERSE_TOP_N = int(os.getenv("UNIVERSE_TOP_N", "30"))

@@ -1,15 +1,15 @@
 {
   "halt_reason": null,
   "halted": false,
-  "last_cycle_ts": 1786685220.384564,
-  "last_full_hour": 496301,
+  "last_cycle_ts": 1786688700.4486709,
+  "last_full_hour": 496302,
   "last_gross": 1000.0,
-  "last_margin": 4139.29735846,
-  "peak_margin": 4156.37228781,
+  "last_margin": 4170.72418684,
+  "peak_margin": 4180.54438088,
   "weights": {
-    "INJUSDT": -0.16676768835579903,
-    "NEARUSDT": -0.29649489813040725,
-    "OPUSDT": 0.3732742759928199,
-    "WLDUSDT": -0.16346313752097377
+    "ARBUSDT": 0.17174438504298117,
+    "INJUSDT": -0.3237459278670767,
+    "NEARUSDT": -0.2956883621747364,
+    "OPUSDT": 0.20882132491520586
   }
 }

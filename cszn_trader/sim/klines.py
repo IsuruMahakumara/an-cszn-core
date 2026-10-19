@@ -1,6 +1,6 @@
 """
 COMPARTMENT: klines
-ROLE:        production 1h close cache — no trading, no demo host
+ROLE:        production 1m close cache — no trading, no demo host
 IN:          BACKTEST_FAPI + frozen universe
 OUT:         (asset closes DataFrame, Bitcoin close Series)
 

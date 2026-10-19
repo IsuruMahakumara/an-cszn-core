@@ -26,7 +26,7 @@ Companion: `docs/cszn-backtest.md` (how the bar clock works).
 3. No new dependencies, no optimizer library, no research platform.
 4. One change per iteration. Diff ≤ ~20 lines or one named knob. Reject multi-file rewrites.
 5. Never weaken the fill model to improve PnL: no same-bar fill, no `FEE_BPS = 0`, no lookahead.
-6. Tape fixed. Same `var/klines_1h.csv`. `BACKTEST_REFRESH` off unless explicitly refreshing history for everyone.
+6. Tape fixed. Same `var/klines_1m.csv` on `exp/cszn-1m`. `BACKTEST_REFRESH` off unless explicitly refreshing history for everyone.
 7. Do not drop losing names from the universe mid-loop. Universe membership changes only via explicit `sim/refresh_universe.py --apply`, then a new frozen tape.
 8. `sim/offline_check.py` must pass after every code change.
 9. Log every run to JSONL: knobs, git hash / description, `net_pnl`, turnover, fees, `max_dd`, OOS window. Never overwrite prior rows.
@@ -39,7 +39,7 @@ Companion: `docs/cszn-backtest.md` (how the bar clock works).
 1. One bet only: CSZN residual fade vs BTC. No second signal, no HMM, no momentum overlay in the search loop.
 2. Allowed to change: a small declared set only (example: `{Z_MIN, RESID_LOOKBACK, STOP_PCT}` or one time-in-market gate). Not all knobs at once.
 3. Forbidden: universe cherry-picking, per-name exceptions, take-profit, fee/haircut games, raising leverage/gross to hide fees.
-4. Must stay: dollar-neutral, β-hedge on active set, next-bar fill, `FEE_BPS` ≥ live, cost floor on adds, no-add-to-losers / per-name stop if part of the frozen live policy.
+4. Must stay: β-hedge on active set, next-bar fill, `FEE_BPS` ≥ live, cost floor on adds, no-add-to-losers / per-name stop if part of the frozen live policy. Dollar 50/50 is **off** on `exp/cszn-1m`.
 5. Scarce risk stays scarce. Do not “find edge” by lifting `GROSS_FRAC` / collateral until fees look small.
 6. Primary score is not raw PnL alone. Require jointly:
    - `net_pnl > 0` on **OOS**

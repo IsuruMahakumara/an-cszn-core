@@ -55,15 +55,12 @@ def sparse_z(z: pd.Series, z_min: float = config.Z_MIN) -> pd.Series:
     return out
 
 
-def dollar_neutral_weights(z: pd.Series) -> pd.Series:
-    # Long sleeve and short sleeve each get half of unit gross.
-    long_raw = z.clip(lower=0.0)
-    short_raw = z.clip(upper=0.0)
-    long_sum = float(long_raw.sum())
-    short_sum = float(short_raw.abs().sum())
-    if long_sum <= 0 or short_sum <= 0:
+def signed_unit_weights(z: pd.Series) -> pd.Series:
+    # IN: sparse z → OUT: unit-gross weights (one sleeve allowed)
+    g = float(z.abs().sum())
+    if g < 1e-12:
         return pd.Series(0.0, index=z.index)
-    return long_raw / long_sum * 0.5 + short_raw / short_sum * 0.5
+    return z / g
 
 
 def beta_neutralize(weights: pd.Series, betas: pd.Series) -> pd.Series:
@@ -105,7 +102,7 @@ def target_weights(
     beta = rolling_beta(r, rm, config.BETA_WINDOW)
     z = cross_sectional_z(residual_signal(residuals(r, rm, beta), config.RESID_LOOKBACK))
     z_trade = sparse_z(z)
-    w = dollar_neutral_weights(z_trade)
+    w = signed_unit_weights(z_trade)
     beta_latest = beta.iloc[-1].reindex(w.index)
 
     # Beta hedge only on names that cleared the z floor.

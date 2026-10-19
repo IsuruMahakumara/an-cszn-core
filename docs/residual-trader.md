@@ -1,8 +1,8 @@
 # Residual futures trader
 
-Repo: **an-cszn-core**. Dollar-neutral residual fade vs Bitcoin on Binance USDT-M demo futures. Bitcoin is the factor only. Fixed clock, fixed rules, scarce risk.
+Repo: **an-cszn-core**. Residual fade vs Bitcoin on Binance USDT-M demo futures (`exp/cszn-1m`: unit-gross z weights, β-hedge, not 50/50 dollar-neutral). Bitcoin is the factor only. Fixed clock, fixed rules, scarce risk.
 
-Index: [backtest](cszn-backtest.md) · [constitution](cszn-backtest-constitution.md) · [universe](cszn-universe.md) · [ledger](cszn-ledger.md) · [CSZN](CSZN.md)
+Index: [backtest](cszn-backtest.md) · [constitution](cszn-backtest-constitution.md) · [universe](cszn-universe.md) · [ledger](cszn-ledger.md) · [CSZN](CSZN.md) · [1m excursion](cszn-1m-excursion.md)
 
 ## Concern graph
 
@@ -16,7 +16,7 @@ flowchart LR
   strategy["strategy<br/>signal / risk / orders"]
   run["run<br/>clock + wire"]
   offline["offline_check<br/>smoke"]
-  klines["klines<br/>prod 1h cache"]
+  klines["klines<br/>prod 1m cache"]
   book["book<br/>paper inventory"]
   backtest["backtest<br/>bar clock"]
   screen["refresh_universe<br/>offline screen"]
@@ -53,7 +53,7 @@ flowchart LR
 | `cszn_trader/ops.py` | Persistence and kill switch. | State dictionary and margin. | Updated state and log path. |
 | `cszn_trader/run.py` | Wires the graph on a clock. | Client and state. | Orders, logs, sleep until wake time. |
 | `cszn_trader/sim/offline_check.py` | Offline smoke test. | Synthetic prices. | Printed ranks and orders. |
-| `cszn_trader/sim/klines.py` | Production 1h close cache. | Prod fapi or CSV. | Asset closes, Bitcoin closes. |
+| `cszn_trader/sim/klines.py` | Production 1m close cache. | Prod fapi or CSV. | Asset closes, Bitcoin closes. |
 | `cszn_trader/sim/book.py` | Paper futures inventory. | Order stubs, next close. | Qty, entry, cash, fees. |
 | `cszn_trader/sim/backtest.py` | Bar clock for proof of edge. | Panel and frozen knobs. | Scorecard after costs. |
 | `cszn_trader/sim/refresh_universe.py` | Offline universe screen. | Prod + demo REST. | `var/universe_*.csv`; `--apply` → frozen list. |
@@ -67,7 +67,7 @@ Universe membership is `cszn_trader/universe.csv` (`enabled=1`). The poll loop n
 
 | Sub-node | Methods | Input | Output |
 |---|---|---|---|
-| signal | `rolling_beta`, `residuals`, `residual_signal`, `cross_sectional_z`, `sparse_z`, `dollar_neutral_weights`, `beta_neutralize`, `apply_weight_deadband`, `target_weights` | Asset closes, Bitcoin closes, prior weights | Unit-gross weights, z-scores, betas |
+| signal | `rolling_beta`, `residuals`, `residual_signal`, `cross_sectional_z`, `sparse_z`, `signed_unit_weights`, `beta_neutralize`, `apply_weight_deadband`, `target_weights` | Asset closes, Bitcoin closes, prior weights | Unit-gross weights, z-scores, betas |
 | risk | `collateral_from_margin`, `gross_notional_budget`, `derived_im`, `cap_name_weights` | Margin, positions, marks | Collateral cap, gross budget, estimated initial margin |
 | orders | `cost_floor`, `rebalance_orders`, `stop_flatten_orders` | Weights, prices, positions, entry, unrealized, gross | Order stubs with `exit_reason`, closes first |
 
@@ -97,15 +97,15 @@ Beta hedge runs only inside names that pass the z-score floor, so weak names sta
 
 ## Run cycle stages
 
-`once` is two modes. Every `POLL_S` (default 60s): margin, peak, halt, and per-name stop vs mark. Full candles + z-weights + rebalance run only when the UTC hour rolls (1h signal cannot change intra-hour). Adds still need z-score floor, deadband, and cost floor. Stops flatten immediately (`STOP_PCT` default 0.6% of that name's notional). Underwater names are never increased. No take-profit. Cycle logs always include `margin`, `peak_margin`, `dd_from_peak`, and `n_stop`.
+`once` is two modes. Every `POLL_S` (default 60s): margin, peak, halt, and per-name stop vs mark. Full candles + z-weights + rebalance run when the **1m** bar id rolls (`exp/cszn-1m`). Adds still need z-score floor, deadband, and cost floor. Stops flatten immediately (`STOP_PCT` default 0.6% of that name's notional). Underwater names are never increased. No take-profit. Cycle logs always include `margin`, `peak_margin`, `dd_from_peak`, and `n_stop`.
 
 ```mermaid
 flowchart TD
-  A[Boot: config and state] --> P{UTC hour rolled?}
+  A[Boot: config and state] --> P{1m bar rolled?}
   P -->|no: stop tick| E
   P -->|yes: full rebalance| B[Market: demo candles]
   B --> C[Signal: beta strip and residual ranks]
-  C --> D[Signal: sparse z-scores and dollar-neutral weights]
+  C --> D[Signal: sparse z-scores and unit-gross weights]
   D --> E{Drawdown halt?}
   E -->|yes| F[Flatten all positions then persist]
   E -->|no| G[Risk: collateral and peak log]

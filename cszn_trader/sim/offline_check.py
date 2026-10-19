@@ -27,7 +27,7 @@ import config
 
 # ── build fake panel ────────────────────────────────────────────────
 rng = np.random.default_rng(0)
-n = 120
+n = config.BETA_WINDOW + config.RESID_LOOKBACK + 50
 idx = np.arange(n)
 btc = pd.Series(50_000 + np.cumsum(rng.normal(0, 80, n)), index=idx)
 

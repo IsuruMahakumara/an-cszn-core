@@ -14,7 +14,7 @@ Frozen trade list + offline liquidity screen. Not part of the poll loop.
 
 `minNotional` / `stepSize` on the CSV are **informational**. Live and demo orders still size from `exchangeInfo` in `exchange.py`.
 
-`var/klines_1h.csv` is the backtest tape cache (gitignored).
+`var/klines_1m.csv` is the backtest tape cache on `exp/cszn-1m` (gitignored).
 
 ## Rules (aligned with constitution)
 

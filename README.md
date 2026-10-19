@@ -10,7 +10,7 @@ pip install -r requirements.txt
 # offline math
 python sim/offline_check.py
 
-# proof of fade (prod 1h cache, not demo)
+# proof of fade (prod 1m cache on exp/cszn-1m, not demo)
 # agent/knob search: docs/cszn-backtest-constitution.md
 python sim/backtest.py
 

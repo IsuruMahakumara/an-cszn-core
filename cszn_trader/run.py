@@ -1,6 +1,6 @@
 """
 COMPARTMENT: run
-ROLE:        wire the graph — 60s stop ticks / 1h z-rebalance
+ROLE:        wire the graph — 60s poll / 1m z-rebalance
 GRAPH (nodes → edges):
   config ──knobs──► all
   exchange ──closes,marks,balances,pos──► run
@@ -43,16 +43,34 @@ def log(*args) -> None:
     print(f"[{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}]", *args)
 
 
-def pull_closes(client: Client) -> tuple[pd.DataFrame, pd.Series]:
-    # IN: client → OUT: (asset closes, Bitcoin closes)
-    book = {}
-    for sym in config.UNIVERSE + [config.BENCHMARK]:
-        raw = client.klines(sym, config.INTERVAL, config.KLINE_LIMIT)
-        book[sym] = pd.Series(
+# How many newest 1m candles to fetch when the bar cache is already warm.
+_TAIL = 5
+
+
+def pull_closes(client: Client, cache: dict[str, pd.Series]) -> tuple[pd.DataFrame, pd.Series]:
+    # IN: client + per-symbol cache → OUT: (asset closes, Bitcoin closes)
+    # Boot: full KLINE_LIMIT. Later ticks: tail merge so demo-fapi is not hammered.
+    names = list(config.UNIVERSE) + [config.BENCHMARK]
+    want = config.KLINE_LIMIT
+    for sym in names:
+        if sym not in cache or len(cache[sym]) < want:
+            raw = client.klines(sym, config.INTERVAL, want)
+            cache[sym] = pd.Series(
+                [float(x[4]) for x in raw],
+                index=[int(x[0]) for x in raw],
+                name=sym,
+            )
+            continue
+        raw = client.klines(sym, config.INTERVAL, _TAIL)
+        tail = pd.Series(
             [float(x[4]) for x in raw],
             index=[int(x[0]) for x in raw],
+            name=sym,
         )
-    df = pd.DataFrame(book).dropna()
+        s = pd.concat([cache[sym], tail])
+        s = s[~s.index.duplicated(keep="last")].sort_index()
+        cache[sym] = s.iloc[-want:]
+    df = pd.DataFrame({s: cache[s] for s in names}).dropna()
     return df.drop(columns=[config.BENCHMARK]), df[config.BENCHMARK]
 
 
@@ -158,11 +176,11 @@ def execute_orders(
     return sent
 
 
-def once(client: Client, state: dict) -> dict:
+def once(client: Client, state: dict, cache: dict[str, pd.Series]) -> dict:
     cycle_start_ms = int(time.time() * 1000)
-    # 1h z is constant inside a UTC hour; stop fuse still runs every poll.
-    hour_id = int(time.time() // 3600)
-    full = state.get("last_full_hour") != hour_id
+    # 1m z updates when the UTC minute rolls. Stops still run on every poll.
+    bar_id = int(time.time() // 60)
+    full = state.get("last_full_bar") != bar_id
 
     # ── node: halt
     margin, avail = client.balances()
@@ -222,8 +240,8 @@ def once(client: Client, state: dict) -> dict:
         log(f"STOP tick n={n_stop}", orders if orders else "none")
         sent = execute_orders(client, orders, pos, collat, avail, im)
     else:
-        # ── node: market + signal (once per UTC hour)
-        assets, btc = pull_closes(client)
+        # ── node: market + signal (once per 1m bar)
+        assets, btc = pull_closes(client, cache)
         bars = len(assets)
         log(f"bars={bars} venue={config.MARKET_BASE} interval={config.INTERVAL} full=1")
         w, z, beta = target_weights(assets, btc, prev_w=weights_from_state(state))
@@ -255,7 +273,7 @@ def once(client: Client, state: dict) -> dict:
             log(f"FIRE orders_n={len(orders)}", orders)
         sent = execute_orders(client, orders, pos, collat, avail, im)
         state["weights"] = {k: float(v) for k, v in w.items() if abs(float(v)) > 1e-12}
-        state["last_full_hour"] = hour_id
+        state["last_full_bar"] = bar_id
 
     # ── node: persist
     state["last_cycle_ts"] = time.time()
@@ -307,7 +325,7 @@ def main() -> None:
     hedge = client.detect_hedge_mode()
     state = load_state()
     log(
-        "CSZN 60s stops / 1h rebalance",
+        "CSZN 60s poll / 1m z",
         f"fapi={config.FAPI_BASE}",
         f"hedge={hedge}",
         f"dry_run={config.DRY_RUN}",
@@ -322,10 +340,11 @@ def main() -> None:
         f"peak={state.get('peak_margin')}",
     )
 
+    cache: dict[str, pd.Series] = {}
     # ── node: poll clock
     while True:
         try:
-            state = once(client, state)
+            state = once(client, state, cache)
         except Exception as e:
             log("error:", e)
             log_cycle({"event": "error", "error": str(e)})
